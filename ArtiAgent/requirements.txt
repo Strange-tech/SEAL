@@ -1,0 +1,9 @@
+# Direct dependencies for the ex-articraft compile path (agent loop + compile_model tool).
+# Everything else (vtk, numba, scipy, casadi, ...) is pulled transitively.
+numpy==2.5.4
+trimesh==5.1.1
+python-fcl==0.7.0.11
+cadquery==2.8.0
+manifold3d==3.5.4
+networkx==3.6.1
+zstandard==0.25.0

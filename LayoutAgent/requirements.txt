@@ -1,0 +1,6 @@
+# Hard dependencies (pure NumPy; usable from both the SDK and the tools compile layer)
+numpy
+
+# Optional — perception tools (need CUDA GPU + PyTorch 2.7+; lazy-loaded, import works without them)
+# sam3               # SAM3 open-set segmentation
+# depth-anything-3   # Depth Anything 3 single-frame reconstruction

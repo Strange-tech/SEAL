@@ -1,0 +1,73 @@
+{
+  "reviewed": {
+    "20261103-204945-94247aea": {
+      "at": "2026-11-03 22:10:33",
+      "created_skills": [
+        "cadquery-workplane-text-kwargs"
+      ],
+      "code_notes": 1
+    },
+    "20261103-223454-88913ae1": {
+      "at": "2026-11-03 22:55:22",
+      "created_skills": [],
+      "code_notes": 0
+    },
+    "20261103-232024-0a9a765d": {
+      "at": "2026-11-03 23:34:26",
+      "created_skills": [
+        "cadquery-selector-or"
+      ],
+      "code_notes": 1
+    },
+    "20261104-113338-a5f1f6ac": {
+      "at": "2026-11-04 11:48:03",
+      "created_skills": [
+        "cadquery-vector-accepted-forms",
+        "memory-md-read-before-edit"
+      ],
+      "code_notes": 0
+    },
+    "20261104-124446-9cfbb60b": {
+      "at": "2026-11-04 12:52:59",
+      "created_skills": [],
+      "code_notes": 0
+    },
+    "20261104-185714-f6a73283": {
+      "at": "2026-11-04 19:00:50",
+      "created_skills": [],
+      "code_notes": 0
+    },
+    "20261104-190050-b3653c94": {
+      "at": "2026-11-04 19:08:56",
+      "created_skills": [],
+      "code_notes": 0
+    },
+    "20261104-190857-7c6b9698": {
+      "at": "2026-11-04 19:15:19",
+      "created_skills": [
+        "articraft-single-root-part"
+      ],
+      "code_notes": 0
+    },
+    "20261104-191520-3d98df6d": {
+      "at": "2026-11-04 19:25:02",
+      "created_skills": [],
+      "code_notes": 0
+    },
+    "20261104-192502-6b05f527": {
+      "at": "2026-11-04 19:34:17",
+      "created_skills": [],
+      "code_notes": 0
+    },
+    "20261104-193417-785e5867": {
+      "at": "2026-11-04 19:38:12",
+      "created_skills": [],
+      "code_notes": 1
+    },
+    "20261105-171731-55a42e53": {
+      "at": "2026-11-05 17:24:02",
+      "created_skills": [],
+      "code_notes": 0
+    }
+  }
+}

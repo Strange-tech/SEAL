@@ -1,0 +1,54 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Runtime / generated state (per-agent) ---
+.sessions/
+storage/
+output/
+data/
+input/
+assets/
+records/
+records_manifest.jsonl
+.pre_fix_backup/
+
+# --- Generated 3D assets / meshes / scenes ---
+*.obj
+*.glb
+*.gltf
+*.usd
+*.usda
+*.usdc
+*.usdz
+*.fbx
+*.stl
+*.ply
+
+# --- Vendored third-party (reinstall from source; see README) ---
+LayoutAgent/third_party/
+
+# --- Model weights (large, kept outside the repo) ---
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

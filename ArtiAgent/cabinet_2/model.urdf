@@ -1,0 +1,220 @@
+<robot name="wooden_cabinet_with_drawers">
+  <material name="oak_carcass">
+    <color rgba="0.46 0.3 0.16 1" />
+    </material>
+  <material name="oak_door">
+    <color rgba="0.52 0.35 0.19 1" />
+    </material>
+  <material name="oak_drawer">
+    <color rgba="0.56 0.38 0.21 1" />
+    </material>
+  <material name="light_top">
+    <color rgba="0.74 0.65 0.48 1" />
+    </material>
+  <material name="dark_metal">
+    <color rgba="0.1 0.1 0.11 1" />
+    </material>
+  <link name="carcass">
+    <visual name="carcass_body">
+      <geometry>
+        <mesh filename="assets/meshes/carcass_body.obj" />
+        </geometry>
+      <material name="oak_carcass">
+        <color rgba="0.46 0.3 0.16 1" />
+        </material>
+      </visual>
+    <visual name="countertop">
+      <geometry>
+        <mesh filename="assets/meshes/countertop.obj" />
+        </geometry>
+      <material name="light_top">
+        <color rgba="0.74 0.65 0.48 1" />
+        </material>
+      </visual>
+    <collision name="carcass_body">
+      <geometry>
+        <mesh filename="assets/meshes/carcass_body.obj" />
+        </geometry>
+      </collision>
+    <collision name="countertop">
+      <geometry>
+        <mesh filename="assets/meshes/countertop.obj" />
+        </geometry>
+      </collision>
+    </link>
+  <link name="door">
+    <visual name="door_leaf">
+      <geometry>
+        <mesh filename="assets/meshes/door_leaf.obj" />
+        </geometry>
+      <material name="oak_door">
+        <color rgba="0.52 0.35 0.19 1" />
+        </material>
+      </visual>
+    <visual name="door_pull">
+      <geometry>
+        <mesh filename="assets/meshes/door_pull.obj" />
+        </geometry>
+      <material name="dark_metal">
+        <color rgba="0.1 0.1 0.11 1" />
+        </material>
+      </visual>
+    <collision name="door_leaf">
+      <geometry>
+        <mesh filename="assets/meshes/door_leaf.obj" />
+        </geometry>
+      </collision>
+    <collision name="door_pull">
+      <geometry>
+        <mesh filename="assets/meshes/door_pull.obj" />
+        </geometry>
+      </collision>
+    </link>
+  <link name="top_drawer">
+    <visual name="drawer_front">
+      <geometry>
+        <mesh filename="assets/meshes/top_drawer_front.obj" />
+        </geometry>
+      <material name="oak_drawer">
+        <color rgba="0.56 0.38 0.21 1" />
+        </material>
+      </visual>
+    <visual name="drawer_box">
+      <geometry>
+        <mesh filename="assets/meshes/top_drawer_box.obj" />
+        </geometry>
+      <material name="oak_carcass">
+        <color rgba="0.46 0.3 0.16 1" />
+        </material>
+      </visual>
+    <collision name="drawer_front">
+      <geometry>
+        <mesh filename="assets/meshes/top_drawer_front.obj" />
+        </geometry>
+      </collision>
+    <collision name="drawer_box">
+      <geometry>
+        <mesh filename="assets/meshes/top_drawer_box.obj" />
+        </geometry>
+      </collision>
+    </link>
+  <link name="upper_drawer">
+    <visual name="drawer_front">
+      <geometry>
+        <mesh filename="assets/meshes/upper_drawer_front.obj" />
+        </geometry>
+      <material name="oak_drawer">
+        <color rgba="0.56 0.38 0.21 1" />
+        </material>
+      </visual>
+    <visual name="drawer_box">
+      <geometry>
+        <mesh filename="assets/meshes/upper_drawer_box.obj" />
+        </geometry>
+      <material name="oak_carcass">
+        <color rgba="0.46 0.3 0.16 1" />
+        </material>
+      </visual>
+    <collision name="drawer_front">
+      <geometry>
+        <mesh filename="assets/meshes/upper_drawer_front.obj" />
+        </geometry>
+      </collision>
+    <collision name="drawer_box">
+      <geometry>
+        <mesh filename="assets/meshes/upper_drawer_box.obj" />
+        </geometry>
+      </collision>
+    </link>
+  <link name="lower_drawer">
+    <visual name="drawer_front">
+      <geometry>
+        <mesh filename="assets/meshes/lower_drawer_front.obj" />
+        </geometry>
+      <material name="oak_drawer">
+        <color rgba="0.56 0.38 0.21 1" />
+        </material>
+      </visual>
+    <visual name="drawer_box">
+      <geometry>
+        <mesh filename="assets/meshes/lower_drawer_box.obj" />
+        </geometry>
+      <material name="oak_carcass">
+        <color rgba="0.46 0.3 0.16 1" />
+        </material>
+      </visual>
+    <collision name="drawer_front">
+      <geometry>
+        <mesh filename="assets/meshes/lower_drawer_front.obj" />
+        </geometry>
+      </collision>
+    <collision name="drawer_box">
+      <geometry>
+        <mesh filename="assets/meshes/lower_drawer_box.obj" />
+        </geometry>
+      </collision>
+    </link>
+  <link name="bottom_drawer">
+    <visual name="drawer_front">
+      <geometry>
+        <mesh filename="assets/meshes/bottom_drawer_front.obj" />
+        </geometry>
+      <material name="oak_drawer">
+        <color rgba="0.56 0.38 0.21 1" />
+        </material>
+      </visual>
+    <visual name="drawer_box">
+      <geometry>
+        <mesh filename="assets/meshes/bottom_drawer_box.obj" />
+        </geometry>
+      <material name="oak_carcass">
+        <color rgba="0.46 0.3 0.16 1" />
+        </material>
+      </visual>
+    <collision name="drawer_front">
+      <geometry>
+        <mesh filename="assets/meshes/bottom_drawer_front.obj" />
+        </geometry>
+      </collision>
+    <collision name="drawer_box">
+      <geometry>
+        <mesh filename="assets/meshes/bottom_drawer_box.obj" />
+        </geometry>
+      </collision>
+    </link>
+  <joint name="carcass_to_door" type="revolute">
+    <origin xyz="0.298 0.2895 0.058" rpy="0 0 0" />
+    <parent link="carcass" />
+    <child link="door" />
+    <axis xyz="0 0 -1" />
+    <limit effort="25" velocity="1.5" lower="0" upper="1.55" />
+    </joint>
+  <joint name="carcass_to_top_drawer" type="prismatic">
+    <origin xyz="-0.1875 0.2895 0.70975" rpy="0 0 0" />
+    <parent link="carcass" />
+    <child link="top_drawer" />
+    <axis xyz="0 1 0" />
+    <limit effort="120" velocity="0.3" lower="0" upper="0.32" />
+    </joint>
+  <joint name="carcass_to_upper_drawer" type="prismatic">
+    <origin xyz="-0.1875 0.2895 0.52325" rpy="0 0 0" />
+    <parent link="carcass" />
+    <child link="upper_drawer" />
+    <axis xyz="0 1 0" />
+    <limit effort="120" velocity="0.3" lower="0" upper="0.32" />
+    </joint>
+  <joint name="carcass_to_lower_drawer" type="prismatic">
+    <origin xyz="-0.1875 0.2895 0.33675" rpy="0 0 0" />
+    <parent link="carcass" />
+    <child link="lower_drawer" />
+    <axis xyz="0 1 0" />
+    <limit effort="120" velocity="0.3" lower="0" upper="0.32" />
+    </joint>
+  <joint name="carcass_to_bottom_drawer" type="prismatic">
+    <origin xyz="-0.1875 0.2895 0.15025" rpy="0 0 0" />
+    <parent link="carcass" />
+    <child link="bottom_drawer" />
+    <axis xyz="0 1 0" />
+    <limit effort="120" velocity="0.3" lower="0" upper="0.32" />
+    </joint>
+  </robot>
