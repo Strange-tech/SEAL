@@ -39,7 +39,7 @@ Exempt from the floating check:
 
 - `floor` itself;
 - `door` and `window` (they are embedded in walls);
-- the `src` of an `abuts` edge (it is supported by `dst`).
+- the `src` of a `supports` edge (it is supported by `dst`).
 
 If a scene has no `floor`, the floating check is skipped and a `note` is
 reported instead.
@@ -56,7 +56,7 @@ not overlap". Fix either the geometry or the relation.
 |----------|---------|
 | `embedded_in` | collision between the door/window and its wall |
 | `overlaps_ok` | collision between the two nodes |
-| `abuts` | floating check for the `src` node |
+| `supports` | floating check for the `src` node |
 
 By type, `floor` never collides, and `door`/`window` never float.
 
@@ -88,7 +88,7 @@ A floating object:
 ```
 
 The table bottom is `C[1] - D[1]/2 = 0.120`, but the floor top is `0.000`.
-Lower the table so its bottom reaches `0` (`C[1] = D[1]/2`), or add an `abuts`
+Lower the table so its bottom reaches `0` (`C[1] = D[1]/2`), or add a `supports`
 edge from `table` to the object that actually supports it.
 
 A contradictory relation:

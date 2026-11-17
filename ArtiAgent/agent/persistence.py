@@ -246,7 +246,7 @@ def write_success_record(
     revision_id = INITIAL_REVISION_ID
     created_at = _utc_now()
 
-    model_path = repo_root / "model.py"
+    model_path = Path("model.py")
     if not model_path.is_file():
         raise FileNotFoundError(f"Missing model.py to record: {model_path}")
     model_text = model_path.read_text(encoding="utf-8", errors="replace")

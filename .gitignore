@@ -23,6 +23,9 @@ assets/
 records/
 records_manifest.jsonl
 .pre_fix_backup/
+.compile_tmp/
+.bbox_tmp/
+.realbbox_tmp/
 
 # --- Generated 3D assets / meshes / scenes ---
 *.obj

@@ -132,6 +132,7 @@ class PerceptionState:
         self.reconstruction = None            # Reconstruction | None
         self.masks = {}                       # name -> (H,W) bool ndarray
         self.boxes = {}                       # name -> [x1,y1,x2,y2] (SAM3 box, original resolution)
+        self.mask_redirect = {}               # old mask name -> merged mask name (set by resolve_overlaps)
 
     def load_image(self):
         """Lazily load the input image and return a PIL.Image (RGB)."""
@@ -186,8 +187,13 @@ class Da3ReconstructTool:
 class BackprojectObbTool:
     """LLM tool: backproject a cached mask with the reconstruction and fit an upright OBB."""
 
-    def __init__(self, state):
+    def __init__(self, state, resolver=None):
         self.state = state
+        # Optional callable () -> summary str that lazily merges overlapping same-object
+        # masks before backprojection (see tools.overlap_resolver.resolve_overlaps).
+        self._resolver = resolver
+        self._resolved = False
+        self._merge_summary = ""
 
     def definition(self):
         return {
@@ -223,20 +229,39 @@ class BackprojectObbTool:
             return "Error: mask_id is required"
         if self.state.reconstruction is None:
             return "Error: no reconstruction yet; run da3_reconstruct first"
-        mask = self.state.masks.get(mask_id)
+
+        # Lazily merge overlapping same-object masks before the first backprojection.
+        if not self._resolved:
+            self._resolved = True
+            if self._resolver is not None:
+                try:
+                    self._merge_summary = self._resolver()
+                except Exception as e:
+                    self._merge_summary = f"[resolve_overlaps] failed: {e}"
+
+        # Resolve an old mask name through the redirect map (set when masks were merged).
+        resolved_id = self.state.mask_redirect.get(mask_id, mask_id)
+
+        mask = self.state.masks.get(resolved_id)
         if mask is None:
             known = ", ".join(sorted(self.state.masks)) or "(none)"
             return f"Error: unknown mask_id {mask_id!r}; known masks: {known}"
         min_points = int(params.get("min_points", 50))
         obb = self.state.reconstruction.object_obb(mask, min_points=min_points)
         if obb is None:
-            return f"[backproject_obb] {mask_id}: not enough points (< {min_points}) to fit an OBB."
+            return f"[backproject_obb] {resolved_id}: not enough points (< {min_points}) to fit an OBB."
 
         def fmt(v):
             return "[" + ", ".join(f"{x:.3f}" for x in v) + "]"
 
         center, dims, theta = obb
-        return (
-            f"[backproject_obb] {mask_id}: center={fmt(center)}, "
+        out = (
+            f"[backproject_obb] {resolved_id}: center={fmt(center)}, "
             f"dims={fmt(dims)}, theta={fmt(theta)}"
         )
+        if resolved_id != mask_id:
+            out = f"[backproject_obb] {mask_id!r} -> merged mask {resolved_id!r}: " + out
+        if self._merge_summary:
+            out = self._merge_summary + "\n" + out
+            self._merge_summary = ""  # report the merge once, then keep outputs clean
+        return out

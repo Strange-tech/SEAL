@@ -118,3 +118,37 @@ def aabb(center, dims, theta):
     """Axis-aligned bounding box of an OBB, returns ``(min, max)``."""
     corners = obb_corners(center, dims, theta)
     return corners.min(axis=0), corners.max(axis=0)
+
+
+def obbs_gap(a, b):
+    """Minimum separation distance between two OBBs (0 if they touch or intersect).
+
+    Mirrors ``obbs_overlap``'s 15-axis SAT projection. For every axis that actually
+    separates the two boxes, record the projected separation; the smallest such value
+    is the gap. If no axis separates, the boxes intersect or touch, so the gap is 0.
+    """
+    ca, da, ta = np.asarray(a[0], float), np.asarray(a[1], float), a[2]
+    cb, db, tb = np.asarray(b[0], float), np.asarray(b[1], float), b[2]
+    Ra = rotation_matrix(ta)
+    Rb = rotation_matrix(tb)
+    t = cb - ca
+    ha = da / 2.0
+    hb = db / 2.0
+
+    axes = [Ra[:, i] for i in range(3)] + [Rb[:, i] for i in range(3)]
+    for i in range(3):
+        for j in range(3):
+            ax = np.cross(Ra[:, i], Rb[:, j])
+            n = np.linalg.norm(ax)
+            if n > 1e-9:
+                axes.append(ax / n)
+
+    gap = None
+    for ax in axes:
+        ax = ax / (np.linalg.norm(ax) + 1e-12)
+        ra = sum(ha[k] * abs(float(np.dot(ax, Ra[:, k]))) for k in range(3))
+        rb = sum(hb[k] * abs(float(np.dot(ax, Rb[:, k]))) for k in range(3))
+        sep = abs(float(np.dot(ax, t))) - (ra + rb)
+        if sep > 1e-9:
+            gap = sep if gap is None else min(gap, sep)
+    return 0.0 if gap is None else float(gap)

@@ -9,6 +9,6 @@ Layers:
 - scene: scene graph -> OBB materialization, OBJ export, OBB reprojection back to image
 - alignment: room frame (y-up) -> camera frame rigid alignment (floor plane estimation)
 """
-from . import alignment, fitting, geometry, manhattan, projection, scene, validation
+from . import alignment, fitting, geometry, manhattan, orientation, projection, scene, validation
 
-__all__ = ["geometry", "manhattan", "projection", "validation", "fitting", "scene", "alignment"]
+__all__ = ["geometry", "manhattan", "projection", "validation", "fitting", "scene", "alignment", "orientation"]

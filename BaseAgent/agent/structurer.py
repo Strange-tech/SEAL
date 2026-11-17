@@ -1,0 +1,70 @@
+"""Prompt structuring layer for BaseAgent.
+
+Expands the user's request into a short execution plan that names the concrete SEAL
+orchestration tool(s) to call. The plan is prepended to the task as ``<execution_plan>``
+so the orchestrating LLM knows which tool to use instead of guessing from the raw text.
+
+Always runs (no word-count threshold): the planner is cheap and reliable, and long prompts
+are exactly the ones most likely to be ambiguous about which tool to call.
+"""
+
+from __future__ import annotations
+
+from provider import image_path_to_data_url
+
+# Compact capability summary given to the structurer so its plan names real tools
+# and does not invent any. Keep this in sync with tools/call_subagent.py.
+TOOL_CAPABILITIES = """Available orchestration tools (use exactly these names):
+- reconstruct_scene(task, image_path): the END-TO-END pipeline — run LayoutAgent on the
+  whole image (segmentation + room reconstruction + save perception state), then generate a
+  per-object articulated asset with ArtiAgent in parallel for every object box in the scene
+  graph. Use when the user wants a full scene turned into both a layout and 3D assets.
+- call_layout_agent(task, image_path, state_save_path): delegate WHOLE-IMAGE segmentation or
+  room reconstruction to LayoutAgent only (SAM3 masks + DA3 depth + scene graph nodes/edges).
+  Use for "segment the scene", "reconstruct the room layout", or "save the mask/box of X".
+  It never generates per-object assets.
+- call_arti_agent(task, image_path, box): delegate a SINGLE named object's articulated asset
+  (URDF + mesh) to ArtiAgent only. Use for "generate/build the <object> asset", optionally
+  constrained to a box. It never does whole-scene segmentation.
+"""
+
+STRUCTURE_PROMPT = """You are the planner for SEAL, a hierarchical scene-reconstruction
+system with three orchestration tools.
+
+{tool_capabilities}
+
+Given the user's request (and the attached image when present), write a short execution
+plan that names the exact tool(s) to call, one step per line, with the concrete arguments
+where relevant (task, image_path, and state_save_path / box when needed).
+
+Preserve the user's task text VERBATIM as the task argument — do NOT summarize, drop, or
+rename named objects (e.g. keep "a sofa, 2 tables, a TV, 4 chairs" exactly as given).
+
+Routing rules:
+- "reconstruct / rebuild / build a room or scene" (with its objects) -> reconstruct_scene (end to end).
+- "segment the scene", "get the layout", "save the mask/box of <object>" -> call_layout_agent.
+- "generate / build the <object> asset" -> call_arti_agent.
+
+Output only the numbered plan, no preamble, no code.
+
+User request: {task}
+"""
+
+
+def _ask(provider, content) -> str:
+    r = provider.send([{"role": "user", "content": content}], None)
+    return (r["choices"][0]["message"].get("content") or "").strip()
+
+
+def structure_task(provider, task, image_path=None, tool_capabilities=TOOL_CAPABILITIES) -> str:
+    """Expand ``task`` into a short execution plan; attach ``image_path`` when provided."""
+    caps = tool_capabilities or TOOL_CAPABILITIES
+    prompt = STRUCTURE_PROMPT.format(task=task, tool_capabilities=caps)
+    if image_path:
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": image_path_to_data_url(image_path)}},
+        ]
+    else:
+        content = prompt
+    return _ask(provider, content)

@@ -26,7 +26,9 @@ from basic_tools import ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool
 from memory import compose_system_prompt
 from skill import discover_skills, SkillTool
 from subagent import SubAgentTool
-from tools.call_subagent import CallLayoutAgentTool, CallArtiAgentTool, set_current_image
+from provider import Provider
+from agent.structurer import structure_task, TOOL_CAPABILITIES
+from tools.call_subagent import CallLayoutAgentTool, CallArtiAgentTool, ReconstructSceneTool, set_current_image
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -200,6 +202,31 @@ def _load_prompt_text(name: str) -> str:
         return ""
 
 
+def _make_structurer(provider_name, model, api_key, base_url):
+    """Build a Provider for prompt structuring; return None if it cannot be created."""
+    try:
+        p = Provider(provider_name, model=model, api_key=api_key)
+        p.base_url = (base_url or p.base_url).rstrip("/")
+        return p
+    except Exception:
+        return None
+
+
+def _structure_task(sp, task, image_path):
+    """Expand the user task into an execution plan (prepended to the task); no-op if sp is None."""
+    if sp is None:
+        return task
+    try:
+        plan = structure_task(sp, task, image_path=image_path, tool_capabilities=TOOL_CAPABILITIES)
+    except Exception as e:
+        print(f"Warning: structuring failed, using original prompt: {e}", file=sys.stderr)
+        return task
+    if plan:
+        task = f"{task}\n\n<execution_plan>\n{plan}\n</execution_plan>"
+        print(f"[Structured plan added{' (image-grounded)' if image_path else ''}]", file=sys.stderr)
+    return task
+
+
 def build_agent(*, api_key, base_url, provider, model, stream):
     skills = discover_skills()
     tools = [
@@ -218,13 +245,16 @@ def build_agent(*, api_key, base_url, provider, model, stream):
     # delegate a whole task to LayoutAgent / ArtiAgent as a subprocess.
     tools.append(CallLayoutAgentTool())
     tools.append(CallArtiAgentTool())
+    tools.append(ReconstructSceneTool())
 
     system_prompt = (
         "<base_agent>\n"
-        "You are a general coding agent that orchestrates LayoutAgent (whole-image "
-        "segmentation / room reconstruction) and ArtiAgent (per-object asset generation). "
-        "Use the provided tools (read_file / write_file / edit_file / list_files / bash) to "
-        "inspect the workspace and complete the task. Read before editing, and verify your changes.\n"
+        "You are the SEAL orchestrator. You delegate to two sub-agents via tools: "
+        "call_layout_agent (whole-image segmentation + room reconstruction -> scene graph), "
+        "call_arti_agent (single-object articulated asset), and reconstruct_scene (the end-to-end "
+        "pipeline: layout first, then per-box parallel ArtiAgent). Use the file tools "
+        "(read_file / write_file / edit_file / list_files / bash) only to inspect the workspace. "
+        "Read before editing, and verify your changes.\n"
         "</base_agent>"
     )
     for name in ("tools_instruction.md", "system.md"):
@@ -244,7 +274,7 @@ def build_agent(*, api_key, base_url, provider, model, stream):
     )
 
 
-def run_repl(agent, initial_image, initial_task=None):
+def run_repl(agent, initial_image, initial_task=None, struct_provider=None):
     print("BaseAgent REPL. Type /help for commands.", file=sys.stderr)
     resume_id = ""
     image_path = initial_image
@@ -304,6 +334,7 @@ def run_repl(agent, initial_image, initial_task=None):
                     continue
                 task = line
 
+            task = _structure_task(struct_provider, task, image_path)
             content = build_user_content(task, image_path)
             set_current_image(image_path)
             try:
@@ -400,13 +431,15 @@ def main():
     stream = stream_flag or repl_mode
 
     agent = build_agent(api_key=api_key, base_url=base_url, provider=provider, model=model, stream=stream)
+    struct_provider = _make_structurer(provider, model, api_key, base_url)
 
     if repl_mode:
         model_label = _resolve_model(provider, model)
         print(_startup_banner(provider, model_label, os.getcwd()), file=sys.stderr)
-        run_repl(agent, image_path, initial_task=task)
+        run_repl(agent, image_path, initial_task=task, struct_provider=struct_provider)
         sys.exit(0)
 
+    task = _structure_task(struct_provider, task, image_path)
     content = build_user_content(task, image_path)
     set_current_image(image_path)
     exit_code = agent.run(content, resume_id)

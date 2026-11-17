@@ -6,15 +6,17 @@ has a concrete skeleton to build against instead of improvising from a one-word
 prompt.
 
 When a reference image is provided, the expansion is image-grounded in three
-steps so the brief reflects what the image actually shows instead of what the
-text alone implies:
+steps so the brief reflects what the object REALLY is, not what a small, blurry,
+or partially occluded crop happens to show:
 
     1. distill the user text into a short noun "hint";
-    2. read the image with the hint to focus attention -> factual description;
-    3. expand the text into a brief using the image description as authority.
+    2. read the image with the hint to focus attention -> a semantic description
+       of the object's true, complete shape (occluded / truncated / blurred parts
+       filled in from the object's category prior, not just the visible pixels);
+    3. expand the text into a brief using that description as grounding.
 
 This keeps the text brief and the reference image from contradicting each other,
-and stops the image from being silently ignored.
+and stops a truncated/occluded crop from shrinking the object's geometry.
 """
 
 from __future__ import annotations
@@ -29,23 +31,35 @@ User request: {task}
 """
 
 IMAGE_PROMPT = """You are examining a reference image for a 3D articulated object.
-Focus on the object named by the hint and describe it as an articulated assembly.
-Report only what is actually visible; do not invent. If the image does not match
-the hint, describe what it really shows.
+The image is a masked crop and may be small, blurry, or partially occluded by
+other objects (e.g. a table or tray), or cut off at the frame edge. Focus on the
+object named by the hint and describe it as an articulated assembly.
+
+Recognize the object's semantic category first, then describe its TRUE, complete
+shape from your prior knowledge of that category. Do NOT describe only the
+visible silhouette: parts hidden by occlusion, truncation, or blur are still real
+and must be filled in from the object's canonical geometry. Use the visible region
+only as partial evidence; the description must reconstruct the whole object, not
+the cropped fragment. If the image does not match the hint, describe what it
+really shows.
 
 Cover these four things explicitly:
 
-1. Links — enumerate every rigid body / part you can see. For each: its shape,
-   color, material, and which one is the base (root) that the rest attach to.
+1. Links — enumerate every rigid body / part the object should have. For each:
+   its true shape, color, material, and which one is the base (root). For hidden
+   or truncated parts, state their expected shape and position instead of omitting
+   them.
 
 2. Joints — for each connection between links: which two links it joins, and how
-   it moves (hinge / slide / fixed), plus the approximate axis of motion.
+   it moves (hinge / slide / fixed), plus the approximate axis of motion. Infer
+   joints that are hidden from how the object normally works.
 
-3. Positions — where each link sits relative to the base (or in absolute terms):
-   above / below / left / right / front / back, and rough distances or proportions.
+3. Positions — where each link sits relative to the base: above / below / left /
+   right / front / back, and rough distances or proportions, from the object's
+   real geometry (not the cropped frame).
 
-4. Text & labels — report any visible lettering, logos, or printed/molded labels
-   with their exact wording and where each sits on the object.
+4. Text & labels — report any lettering, logos, or printed/molded labels, with
+   their exact wording and where each sits on the object.
 
 Hint: {hint}
 """
@@ -54,11 +68,13 @@ STRUCTURE_PROMPT = """You are writing a design brief for a 3D articulated object
 
 Given the user's request and the reference image description below, write a
 concise natural-language design brief (no code). Treat the image description as
-the authoritative source: keep what it describes, and expand or correct the
-request where the two conflict or where the request is too vague.
+grounding evidence, not a literal silhouette: when it describes an occluded or
+partial crop, complete the object to its true, canonical shape from semantic
+prior knowledge. Keep what it describes, and expand or correct the request where
+the two conflict or where the request is too vague.
 
 When the reference or request shows visible lettering, logos, or printed/molded
-labels, specify them as engraved/molded lettering, and list the exact strings plus where each sits. 
+labels, specify them as engraved/molded lettering, and list the exact strings plus where each sits.
 Do NOT describe them as "surface graphics" or imply flat decals.
 
 Output only the brief, no preamble.

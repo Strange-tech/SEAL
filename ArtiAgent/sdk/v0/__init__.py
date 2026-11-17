@@ -2,6 +2,8 @@ from .articulated_object import ArticulatedObject
 from .assets import mesh_from_input
 from .errors import SDKError, ValidationError
 from .geometry_scale import scale_geometry_to_size
+from .fit_to_box import fit_to_box
+from .real_bounding_box import joint_range_bounding_box
 from .mesh import (
     ArcPipeGeometry,
     BarrelHingeGeometry,
@@ -166,6 +168,8 @@ __all__ = [
     "SDKError",
     "ValidationError",
     "scale_geometry_to_size",
+    "fit_to_box",
+    "joint_range_bounding_box",
     "MeshGeometry",
     "WirePath",
     "KnobSkirt",

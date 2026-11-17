@@ -20,7 +20,7 @@ from sdk._dependencies import require_cadquery
 
 Vec3 = tuple[float, float, float]
 AABB = tuple[Vec3, Vec3]
-_CADQUERY_MESH_CACHE_VERSION = "v1"
+_CADQUERY_MESH_CACHE_VERSION = "v2"
 
 
 @dataclass(frozen=True)
@@ -175,6 +175,9 @@ def _tessellate_cadquery_shape(
 
     scale = float(unit_scale)
     vertices = [tuple(coord * scale for coord in _vector_xyz(vertex)) for vertex in vertices_raw]
+    # CadQuery is z-up (X width, Y depth with front at +Y, Z up); the SEAL world is
+    # y-up (X width, Y up, Z front). Convert (x, y, z) -> (-x, z, y).
+    vertices = [(-x, z, y) for (x, y, z) in vertices]
     triangles = [(int(face[0]), int(face[1]), int(face[2])) for face in triangles_raw]
 
     if not vertices:

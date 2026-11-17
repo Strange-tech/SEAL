@@ -7,7 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 from provider import PROVIDERS, get_provider, image_path_to_data_url
-from tool_layer import ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool, BashTool, CompileModelTool, ProbeModelTool, FindExamplesTool, restore
+from tool_layer import ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool, BashTool, CompileModelTool, ProbeModelTool, RealBboxTool, FindExamplesTool, restore
+from agent.bbox import compute_model_real_bbox
 from registry_layer import Registry
 from session_layer import new_session_file, load_session
 from budget import effective_context_window, estimate_tokens, check_budget, BUDGET_FRACTION
@@ -54,6 +55,7 @@ def print_help() -> None:
 	lines.append("  --model <id>                Override the model id (highest priority)")
 	lines.append("  --image <path>              Optional reference image (requires provider vision)")
 	lines.append("  --emit-result <path>        Dump result JSON (asset_dir + real_bbox) to <path>")
+	lines.append("  --box <cx,cy,cz>,<w,h,l>[,<rx,ry,rz>]  Hard size constraint (front +z, up +y)")
 	lines.append("  --structure <mode>          When to expand the prompt: always | auto | never")
 	lines.append("                              default: 'auto' (expand prompts <= 8 words)")
 	lines.append("  --max-rounds <n>            Maximum agent rounds before stopping (default: 60)")
@@ -116,15 +118,78 @@ def _run_fix_bugs(parent_id: str, child_id: str, task: str, session_id: str) -> 
 	except Exception as e:
 		print(f"[fix-bugs] skill distillation failed to run: {e}", file=sys.stderr)
 
-def _emit_result(path, asset_dir):
+def _emit_result(path, asset_dir, center=None, dims=None, rpy=None):
 	try:
 		p = Path(path).expanduser().resolve()
 		p.parent.mkdir(parents=True, exist_ok=True)
-		payload = {"asset_dir": str(asset_dir), "real_bbox": None}
+		payload = {
+			"asset_dir": str(asset_dir),
+			"center": [round(float(v), 6) for v in (center or (0.0, 0.0, 0.0))],
+			"dims": [round(float(v), 6) for v in (dims or (0.0, 0.0, 0.0))],
+			"rpy": [round(float(v), 6) for v in (rpy or (0.0, 0.0, 0.0))],
+		}
 		p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 		print(f"[emit-result] wrote {p}", file=sys.stderr)
 	except Exception as e:
 		print(f"[emit-result] failed: {e}", file=sys.stderr)
+
+
+def _parse_box(arg):
+	# Parse --box '<cx,cy,cz>,<w,h,l>[,<rx,ry,rz>]' (rpy optional) or a JSON object.
+	s = arg.strip()
+	if s.startswith("{"):
+		try:
+			obj = json.loads(s)
+		except json.JSONDecodeError as e:
+			raise ValueError(f"--box JSON invalid: {e}")
+		return _normalize_box(obj.get("center"), obj.get("dims"), obj.get("rpy", (0.0, 0.0, 0.0)))
+	parts = [p.strip() for p in s.split(",")]
+	if len(parts) < 6:
+		raise ValueError("--box must be '<cx,cy,cz>,<w,h,l>[,<rx,ry,rz>]' or JSON {center,dims,rpy}")
+	center = parts[0:3]
+	dims = parts[3:6]
+	rpy = parts[6:9] if len(parts) >= 9 else ("0", "0", "0")
+	return _normalize_box(center, dims, rpy)
+
+
+def _normalize_box(center, dims, rpy):
+	try:
+		center = [float(v) for v in center]
+		dims = [float(v) for v in dims]
+		rpy = [float(v) for v in rpy]
+	except (TypeError, ValueError) as e:
+		raise ValueError(f"--box values must be numbers: {e}")
+	if len(center) != 3 or len(dims) != 3 or len(rpy) != 3:
+		raise ValueError("--box center/dims/rpy must each have 3 numbers")
+	if any(v <= 0 for v in dims):
+		raise ValueError("--box dims must be positive")
+	return {"center": center, "dims": dims, "rpy": rpy}
+
+
+def _box_constraint_text(box):
+	cx, cy, cz = box["center"]
+	w, h, l = box["dims"]
+	rx, ry, rz = box["rpy"]
+	return chr(10).join([
+		"<box_constraint>",
+		f"Reference box from the layout (--box): target dims (w x h x l) = ({w} x {h} x {l}) centred at ({cx}, {cy}, {cz}), orientation rpy = ({rx}, {ry}, {rz}).",
+		"This is a SOFT reference, not a hard fit. Author the object at its natural, believable size with its geometric centre at the world origin (0,0,0), in CadQuery z-up (the SDK auto-converts to the y-up world frame: front +z, up +y). Do NOT apply any position offset or rotation; do NOT call fit_to_box.",
+		"The scene placement (translation to ({cx}, {cy}, {cz}) and rotation rpy) is applied separately by the renderer - the model only supplies the canonical geometry.",
+		"After each compile, the harness reports the delta between this reference box and the object's actual box (position/scale/rotation). Analyze whether the actual box is acceptable; if not, adjust the model and recompile.",
+		"</box_constraint>",
+	])
+def _emit_with_real_bbox(emit_result, record_dir, repo_root, box=None):
+	real_dims = None
+	try:
+		center, dims = compute_model_real_bbox(Path("model.py"), asset_root=Path(".bbox_tmp"))
+		real_dims = dims
+	except Exception as e:
+		print(f"[real-bbox] failed: {e}", file=sys.stderr)
+	if real_dims is None:
+		real_dims = box["dims"] if box else (0.0, 0.0, 0.0)
+	placement_center = box["center"] if box else (0.0, 0.0, 0.0)
+	placement_rpy = box["rpy"] if box else (0.0, 0.0, 0.0)
+	_emit_result(emit_result, record_dir, center=placement_center, dims=real_dims, rpy=placement_rpy)
 
 
 def main():
@@ -149,12 +214,13 @@ def main():
 	lineage = None
 	review_requested = False
 	reason = "creation"
+	box_arg = None
 	positional = []
 	i = 0
 	raw_args = sys.argv[1:]
 	while i < len(raw_args):
 		a = raw_args[i]
-		if a in ("--provider", "--model", "--image", "--emit-result", "--structure", "--max-rounds", "--edit", "--task", "--reason"):
+		if a in ("--provider", "--model", "--image", "--emit-result", "--structure", "--max-rounds", "--edit", "--task", "--reason", "--box"):
 			if i + 1 >= len(raw_args):
 				print(f"Usage: {a} <value>", file=sys.stderr)
 				sys.exit(1)
@@ -174,6 +240,8 @@ def main():
 				task = raw_args[i + 1]
 			elif a == "--reason":
 				reason = raw_args[i + 1]
+			elif a == "--box":
+				box_arg = raw_args[i + 1]
 			else:
 				max_rounds = raw_args[i + 1]
 			i += 2
@@ -200,6 +268,8 @@ def main():
 			max_rounds = a.split("=", 1)[1]
 		elif a.startswith("--reason="):
 			reason = a.split("=", 1)[1]
+		elif a.startswith("--box="):
+			box_arg = a.split("=", 1)[1]
 		else:
 			positional.append(a)
 		i += 1
@@ -229,6 +299,14 @@ def main():
 	if reason == "fix_bugs" and not edit_record_id:
 		print("Error: --reason fix_bugs requires --edit <record_id>", file=sys.stderr)
 		sys.exit(1)
+	box = None
+	if box_arg:
+		try:
+			box = _parse_box(box_arg)
+		except ValueError as e:
+			print(f"Error: {e}", file=sys.stderr)
+			sys.exit(1)
+		print(f"[Box constraint: center={box['center']} dims={box['dims']} rpy={box['rpy']}]", file=sys.stderr)
 
 	try:
 		provider = get_provider(provider_name, model=model_override)
@@ -261,6 +339,7 @@ def main():
 	runtime_guidance = (
 		"<runtime_task_guidance>\n"
 		"- Read the current `model.py` before editing.\n"
+		"- Author the object with its geometric centre at the world origin (0,0,0), in canonical y-up / +z-forward orientation (front +z, up +y). Do NOT apply any position offset or rotation; the scene placement is applied separately by the renderer.\n"
 		"- SDK docs are read with `read_file` using the virtual paths in the preloaded quickstart "
 		"index (e.g. docs/sdk/references/core-types.md, docs/sdk/references/articulated-object.md, "
         "docs/sdk/references/geometry/hinges.md).\n"
@@ -279,6 +358,8 @@ def main():
 		"</runtime_task_guidance>"
 	)
 	system_note = designer_prompt + "\n\n" + sdk_docs + "\n\n" + runtime_guidance
+	if box:
+		system_note += "\n\n" + _box_constraint_text(box)
 
 	if skills:
 		system_note += (
@@ -296,7 +377,7 @@ def main():
 			This is an edit request for an existing Articraft asset. The parent model.py has already been staged as the editable starting file. Treat that staged code as the current asset source, preserve the parts that still satisfy the original object, and make the smallest coherent set of changes needed for the new user request. Do not assume prior conversation history is available; use the staged code and this edit prompt as the source of truth.
 			</edit_guidance>"""
 
-	tools = [ReadFileTool(), WriteFileTool(), EditFileTool(), BashTool(), CompileModelTool(), ProbeModelTool(), FindExamplesTool()]
+	tools = [ReadFileTool(), WriteFileTool(), EditFileTool(), BashTool(), CompileModelTool(box=box), ProbeModelTool(), RealBboxTool(), FindExamplesTool()]
 	if skills:
 		tools.append(SkillTool(skills))
 	sub_agent = SubAgentTool(provider, list(tools), skills)
@@ -354,6 +435,8 @@ def main():
 			if brief:
 				task = f"{task}\n\n<design_brief>\n{brief}\n</design_brief>"
 				print(f"[Structured brief added{' (image-grounded)' if image_path else ''}]", file=sys.stderr)
+	if box:
+		task = f"{task}\n\n{_box_constraint_text(box)}"
 
 	if image_path:
 		user_content = [
@@ -436,7 +519,7 @@ def main():
 			print(f"[record: {_record_id}]", file=sys.stderr)
 			print(f"[record dir: {_record_dir}]", file=sys.stderr)
 			if emit_result:
-				_emit_result(emit_result, _record_dir)
+				_emit_with_real_bbox(emit_result, _record_dir, repo_root, box)
 			if review_requested:
 				_run_review(sess.id)
 			if edit_record_id and reason == "fix_bugs":
@@ -459,7 +542,7 @@ def main():
 	print(f"[record: {_record_id}]", file=sys.stderr)
 	print(f"[record dir: {_record_dir}]", file=sys.stderr)
 	if emit_result:
-		_emit_result(emit_result, _record_dir)
+		_emit_with_real_bbox(emit_result, _record_dir, repo_root, box)
 	if review_requested:
 		_run_review(sess.id)
 	if edit_record_id and reason == "fix_bugs":

@@ -10,10 +10,13 @@ from memory import compose_system_prompt
 from skill import discover_skills, SkillTool
 from subagent import SubAgentTool
 from tools.compile import CompileTool, load_scene_graph
+from tools.node_merge import merge_contained_nodes, graph_to_py
 from tools.fileio import ManhattanRegularizeTool
 from tools.materialize import ExportObjTool, export_scene_graph
 from tools.reconstruction import PerceptionState, Da3ReconstructTool, BackprojectObbTool
 from tools.segmentation import Sam3SegmentTool
+from tools.overlap_resolver import ResolveOverlapsTool, resolve_overlaps
+from tools.write_perception import WritePerceptionStateTool, save_perception_state
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -30,6 +33,7 @@ Options:
   --task <text>       Task text (required): the reconstruction instruction or a question about the room
   --image <path>      Input image path (optional)
   --emit-scene-graph <path>   Dump the final scene graph (nodes/edges JSON) to <path>
+  --state-save-path <dir>  Save the perception state (image/reconstruction/masks/boxes) to <dir>
   --edit <room_id>    Edit an existing room (fork its room.py + lineage as the starting point)
   -c <session_id>     Resume an existing session (used with --task)
   --provider <name>   LLM provider: deepseek | qwen (default: PROVIDER env or deepseek)
@@ -66,6 +70,7 @@ def main():
 
     image_path = None
     emit_scene_graph = None
+    state_save_path = None
     edit_room_id = None
     task = None
     resume_id = ""
@@ -91,6 +96,15 @@ def main():
             i += 2
         elif a.startswith("--emit-scene-graph="):
             emit_scene_graph = a.split("=", 1)[1]
+            i += 1
+        elif a == "--state-save-path":
+            if i + 1 >= len(raw_args):
+                print("--state-save-path requires a directory", file=sys.stderr)
+                sys.exit(1)
+            state_save_path = raw_args[i + 1]
+            i += 2
+        elif a.startswith("--state-save-path="):
+            state_save_path = a.split("=", 1)[1]
             i += 1
         elif a == "--edit":
             if i + 1 >= len(raw_args):
@@ -157,13 +171,21 @@ def main():
 
     state_image = str(Path(image_path).expanduser().resolve()) if image_path else None
     state = PerceptionState(state_image)
+
+    # A dedicated provider for the overlap-resolver's VLM check (same model/key as the agent).
+    vlm_provider = Provider(provider, model=model, api_key=api_key)
+    vlm_provider.base_url = (base_url or vlm_provider.base_url).rstrip("/")
+    overlap_resolver = lambda: resolve_overlaps(state, vlm_provider)
+
     tools = [
         ReadFileTool(), WriteFileTool(), EditFileTool(), ListFilesTool(), BashTool(),
         Sam3SegmentTool(state),
         Da3ReconstructTool(state),
-        BackprojectObbTool(state),
+        BackprojectObbTool(state, resolver=overlap_resolver),
+        ResolveOverlapsTool(state, vlm_provider),
+        WritePerceptionStateTool(state),
         ManhattanRegularizeTool(),
-        CompileTool(path=str(REPO_ROOT / "room.py"), state=state),
+        CompileTool(path=str(REPO_ROOT / "room.py"), state=state, resolver=overlap_resolver),
         ExportObjTool(path=str(REPO_ROOT / "room.py")),
     ]
     if skills:
@@ -177,36 +199,29 @@ def main():
     )
     sdk_docs = load_sdk_docs_reference(repo_root, sdk_package="sdk")
 
+    if image_path:
+        perception_note = (
+            "- An image IS attached: ground the scene with the perception pipeline "
+            "(sam3_segment -> da3_reconstruct -> backproject_obb -> manhattan_regularize).\n"
+            "- Run `resolve_overlaps` after `sam3_segment` and before `backproject_obb`; if it merges "
+            "masks, emit ONE node for the merged object. Write the SAM3 mask name in each object "
+            "node's `mask` field so `compile` can merge duplicate nodes.\n"
+            "- When asked to save masks / perception, run `write_perception_state`.\n"
+        )
+    else:
+        perception_note = (
+            "- NO image is attached (text-only): skip `sam3_segment` / `da3_reconstruct` / "
+            "`backproject_obb` and author `room.py` directly from the task text + the SDK docs.\n"
+        )
     runtime_guidance = (
         "<runtime_task_guidance>\n"
-        "- Read the current `room.py` before editing.\n"
-        "- SDK docs are read with `read_file` using the virtual paths in the preloaded quickstart "
-        "index (e.g. docs/sdk/references/quickstart.md, docs/sdk/references/testing.md).\n"
-        "- Build from grounded evidence: inspect the image, run `sam3_segment` per visible object, "
-        "then `da3_reconstruct` for metric depth, backproject masks with `backproject_obb`, and snap "
-        "orientations with `manhattan_regularize`.\n"
-        "- Perception vs. VLM prior: `sam3_segment` + `da3_reconstruct` + `backproject_obb` give the "
-        "accurate position (and accurate scale/orientation when the object is fully in frame). When an "
-        "object is only partially in frame, perception's OBB is truncated — take the accurate position "
-        "from perception, but complete the object's scale and orientation from the design brief's VLM "
-        "prior.\n"
-        "- Snap resting objects to their support: for every object linked by an `abuts` edge to a "
-        "support (or resting on the reference surface), set its bottom face exactly to the support's top "
-        "(`C_y = support_top_y + D_y/2`). Do not leave a small clearance/rounding gap — even a 1 cm gap "
-        "is visually wrong on close-up shots.\n"
-        "- Write a complete, compilable `room.py` in your FIRST `write_file` call (a full "
-        "`build_scene_graph()` returning `nodes`/`edges`, not a stub), then iterate with small "
-        "`edit_file` changes.\n"
-        "- Do NOT probe the perception SDK or the scene-graph validator with one-off "
-        "`bash python -c` commands. Author the scene graph directly in `room.py`; `compile` "
-        "reports contract and usage errors for you.\n"
-        "- Reconstruct only objects actually visible in the image, with real-world metric "
-        "dimensions and orientations; no floating objects, no undeclared overlaps.\n"
-        "- Run `compile` to check your latest revision.\n"
-        "- If compile is clean and the scene graph already satisfies the visible-scene brief, "
-        "conclude.\n"
+        + perception_note
+        + "- Snap resting objects to their support: bottom face exactly on the support's top "
+        "(`C_y = support_top_y + D_y/2`), no rounding gap.\n"
+        + "- For object nodes that are multiple instances of the same thing (e.g. three identical dining chairs), set a shared `class` field on each node (e.g. `class: \"dining chair\"`) so downstream generates the asset once and reuses it across instances.\n"
         "</runtime_task_guidance>"
     )
+
     system_prompt = designer_prompt + "\n\n" + sdk_docs + "\n\n" + runtime_guidance
 
     # -- structure terse prompts into a scene-graph brief before the agent loop --
@@ -258,9 +273,24 @@ def main():
     )
     exit_code = agent.run(user_content, resume_id)
 
+    # Final safety-net merge: deterministically collapse object nodes that resolve to the
+    # same overlap-merged mask, so the emitted scene graph / OBJ have one node per object
+    # even if the agent's last compile was followed by a re-split edit.
+    room_path = str(REPO_ROOT / "room.py")
+    if getattr(state, "masks", None):
+        try:
+            overlap_resolver()  # idempotent; ensures mask_redirect is up to date
+            graph, gerr = load_scene_graph(room_path)
+            if graph is not None and not gerr:
+                merged, merged_summary = merge_contained_nodes(graph, state)
+                if merged_summary:
+                    (REPO_ROOT / "room.py").write_text(graph_to_py(merged), encoding="utf-8")
+                    print("[merge] final room.py: " + "; ".join(merged_summary), file=sys.stderr)
+        except Exception as e:
+            print(f"[merge] final merge skipped: {e}", file=sys.stderr)
+
     # Auto-materialize the final scene graph to room.obj after every run
     # (best-effort: a failed/partial room.py just leaves the previous OBJ in place).
-    room_path = str(REPO_ROOT / "room.py")
     ok, message = export_scene_graph(room_path, out=str(REPO_ROOT / "room.obj"))
     if ok:
         print(f"[materialize] {message}", file=sys.stderr)
@@ -281,6 +311,20 @@ def main():
                 print(f"[emit-scene-graph] wrote {emit_path}", file=sys.stderr)
         except Exception as e:
             print(f"[emit-scene-graph] failed: {e}", file=sys.stderr)
+
+    # --state-save-path: dump the shared perception state (image / DA3 reconstruction /
+    # SAM3 masks / boxes) to a directory. Best-effort: a still-empty state just writes a bare
+    # manifest; a failure must not change the process exit code.
+    if state_save_path:
+        try:
+            manifest = save_perception_state(state, state_save_path)
+            print(
+                f"[state-save-path] wrote {manifest['out_dir']} "
+                f"({len(state.masks or {})} masks, {len(state.boxes or {})} boxes)",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(f"[state-save-path] failed: {e}", file=sys.stderr)
 
     # Persist this run as a record (record + revision + provenance + lineage + manifest),
     # then materialize room.obj into the record's materialization dir. Best-effort: a

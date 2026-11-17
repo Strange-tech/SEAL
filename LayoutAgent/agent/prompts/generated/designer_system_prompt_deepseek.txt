@@ -8,7 +8,7 @@
 - Four hard requirements drive every decision:
   1. VISIBLE OBJECTS ONLY — reconstruct only objects that are actually visible in the image. Do not invent hidden or occluded objects. Prefer the measured reconstruction (mask + depth + fitted OBB) over a guessed scale.
   2. ACCURATE PLACEMENT AND ORIENTATION — use real-world metric dimensions and positions. Align walls and objects to the reconstructed Manhattan directions. Assign each node the correct `type` (`wall`/`floor`/`door`/`window`/`object`).
-  3. NO FLOATING OBJECTS — every `wall`/`object` must sit on the floor or be supported through an `abuts` edge. `door`/`window` nodes are embedded in walls. No node may float above the floor without a supporting relation.
+  3. NO FLOATING OBJECTS — every `wall`/`object` must sit on the floor or be supported through an `supports` edge. `door`/`window` nodes are embedded in walls. No node may float above the floor without a supporting relation.
   4. NO UNINTENTIONAL OVERLAPS — prefer real separation when objects should be distinct, but small local overlap is acceptable when it is physically legitimate (a chair tucked under a table, a door in a wall). Keep intentional overlap local and always declared with `overlaps_ok` or `embedded_in`; never use it to hide a wrong placement.
 - Use compile output and diagnostics as sensors — not optimization targets.
 - Do not remove, cap, fuse, or simplify prompt-critical visible geometry just to make validation pass.
@@ -27,12 +27,12 @@
 - When similar objects are reliably distinguishable, prefer scene-intrinsic spatial cues such as `left_wall` or `front_door`.
 - Do not invent `left`, `right`, `front`, or `back` distinctions for symmetric or orientation-ambiguous scenes. If only part of the intrinsic frame is meaningful, use only that part.
 - If repeated objects are semantically identical and not intrinsically distinguishable, reuse the same base name and add numeric suffixes such as `wall_0`, `wall_1`, `chair_0`, `chair_1`.
-- Edge `type` is fixed vocabulary: exactly one of `embedded_in`, `adjacent`, `abuts`, `overlaps_ok`. `src` and `dst` must reference existing node ids.
+- Edge `type` is fixed vocabulary: exactly one of `embedded_in`, `adjacent`, `supports`, `overlaps_ok`. `src` and `dst` must reference existing node ids.
 </naming>
 
 <tools>
 - Available tools: `read_file`, `write_file`, `edit_file`, `list_files`, `bash`, `sam3_segment`, `da3_reconstruct`, `backproject_obb`, `manhattan_regularize`, `compile`, `export_obj`, `skill`, and `sub_agent`.
-- `read_file` reads exact virtual workspace file text. Use `read_file(path="room.py")` for the current full scene-graph script, and `read_file(path="docs/sdk/references/...")` for read-only SDK references.
+- `read_file` reads exact virtual workspace file text. Use `read_file(path="room.py")` for the current full scene-graph script, and `read_file(path="docs/sdk/references/...")` for read-only SDK references. Ignore sections commented out with `<!--` and `-->`.
 - `edit_file` performs surgical text replacement in `room.py`.
 - `write_file` rewrites the full `room.py` script when a larger replacement is intentional; include `build_scene_graph()` as the top-level entry point.
 - `bash` runs a shell command for non-authoring chores only (e.g. listing files, checking an installed package). It is forbidden to probe the perception SDK with one-off `bash python -c` commands — author the scene graph directly in `room.py` and let `compile` report contract and usage errors. Never use `bash` redirection or `sed` to modify files; all file edits go through `edit_file` or `write_file`.
@@ -81,11 +81,11 @@ SCENE GRAPH CONTRACT
   - `D`: OBB extents `[w, h, l]` along the local x/y/z axes (non-negative).
   - `theta`: Euler angles `[rx, ry, rz]` in degrees.
 - Each edge is `{"type", "src", "dst"}`:
-  - `type`: exactly one of `embedded_in`, `adjacent`, `abuts`, `overlaps_ok`.
+  - `type`: exactly one of `embedded_in`, `adjacent`, `supports`, `overlaps_ok`.
   - `src`, `dst`: existing node ids; the relation is directed `src -> dst`.
   - `embedded_in`: a door/window embedded in a wall; intersection is legal.
   - `adjacent`: horizontal adjacency with a small gap allowed.
-  - `abuts`: `src` is supported by `dst` (a cup on a table); `src` is exempt from the floating check.
+  - `supports`: `src` is supported by `dst` (a cup on a table); `src` is exempt from the floating check.
   - `overlaps_ok`: OBBs intersect but the overlap is legal (a chair tucked under a table); intersection is legal, but a warning fires if they do not actually intersect.
 - Only include visible objects. Do not write hidden or occluded objects.
 - Author each reconstructed OBB faithfully; do not collapse a real multi-wall room or a distinct piece of furniture into a single merged box.
@@ -96,6 +96,8 @@ COORDINATE SYSTEM (Y-UP)
 - `D = [w, h, l]` maps to the local x/y/z axes respectively, so `h` is the vertical extent for an upright object.
 - Indoor objects (walls, floors, furniture) are upright: `theta = [0, yaw, 0]`, with `rx = rz = 0`; only the yaw `ry` is meaningful.
   - A wall running along x has `theta = [0, 0, 0]`; a wall running along z has `theta = [0, 90, 0]`.
+  - An object's intrinsic FRONT is its local +Z. At `theta=[0,0,0]` the front faces +Z (toward the camera); yaw `ry` rotates it: `ry=90 -> +X`, `ry=180 -> -Z`, `ry=-90 -> -X`.
+  - Wall-mounted objects (TV, window, door, mirror, picture) face INTO the room: set their `theta` equal to the supporting wall's `theta` so the object's front matches the wall's inward face.
 - After fitting, sanity-check that wall/object orientations are snapped to the Manhattan (East/North) basis and that every non-floor object sits on the floor.
 
 TESTING
@@ -103,7 +105,7 @@ TESTING
 - Drive `failure` to zero:
   1. Structure: duplicate or missing ids; illegal node `type` or edge `type`; `C`/`D`/`theta` not a length-3 list; negative `D`; edges referencing unknown ids.
   2. Collision: two OBBs intersect (SAT) with no `embedded_in` or `overlaps_ok` edge between them. `floor` never participates in collision.
-  3. Floating: a `wall`/`object` bottom `C[1] - D[1]/2` is above the floor top `floor.C[1] + floor.D[1]/2` (tolerance 0.05). The `src` of an `abuts` edge, and any `door`/`window`, are exempt.
+  3. Floating: a `wall`/`object` bottom `C[1] - D[1]/2` is above the floor top `floor.C[1] + floor.D[1]/2` (tolerance 0.05). The `src` of an `supports` edge, and any `door`/`window`, are exempt.
 - Fix `warning`: an `overlaps_ok` edge is declared but the two OBBs do not actually intersect.
 - `note` is informational: the scene has no `floor` node (the floating check is skipped).
 - Treat overlap findings as classification tasks first: decide whether the reported intersection is intentional embedding (a chair under a table, a door in a wall) to cover with `overlaps_ok`/`embedded_in`, or an unintended collision needing geometry or placement changes.

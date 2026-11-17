@@ -22,6 +22,7 @@ You are editing a virtual authoring workspace.
 
 - `docs/sdk/references/quickstart.md`: script contract, workspace rules, minimal example, workflow.
 - `docs/sdk/references/testing.md`: the three diagnostic tiers and every validation exemption.
+- `docs/sdk/references/walls_and_floor.md`: the rules for walls and floor. If the task mentions room shape / walls / floor (e.g. square, L-shape, U-shape, alcove, partition), you MUST read it before writing room.py.
 
 Read the exact document you need. Do not guess field names or types from memory.
 
@@ -65,7 +66,7 @@ An edge is a spatial relation between two nodes:
 {"type": "embedded_in", "src": "door_0", "dst": "wall_0"}
 ```
 
-- `type`: exactly one of `embedded_in`, `adjacent`, `abuts`, `overlaps_ok`.
+- `type`: exactly one of `embedded_in`, `adjacent`, `supports`, `overlaps_ok`.
 - `src`, `dst`: existing node ids; the relation is directed `src -> dst`.
 
 Only include objects that are visible in the image. Do not write hidden or
@@ -97,6 +98,12 @@ occluded objects.
   the yaw `ry` is meaningful.
   - A wall running along x has `theta = [0, 0, 0]`; a wall along z has
     `theta = [0, 90, 0]`.
+  - **Wall facing convention**: a wall's normal is its local +Z (thickness)
+    axis, and **+Z must point indoors (inward normal)**. For a given wall there
+    are two legal yaws 180° apart — pick the one that makes +Z face into the room.
+    Example: a wall running along x with the room on its +z side has
+    `theta = [0, 0, 0]`; if the room is on its -z side, use `theta = [0, 180, 0]`.
+    Walls running along z are analogous with ±90.
 
 ## Relations
 
@@ -104,7 +111,7 @@ occluded objects.
 |----------|-----------|-----------|
 | `embedded_in` | a door/window embedded in a wall | intersection legal (no collision) |
 | `adjacent` | horizontal adjacency; a small gap is allowed | none |
-| `abuts` | `src` is supported by `dst` (a cup on a table) | `src` exempt from floating check |
+| `supports` | `src` is supported by `dst` (a cup on a table, a picture on a wall); OBB faces in tight contact | `src` exempt from floating check |
 | `overlaps_ok` | OBBs intersect but legal (a chair under a table) | intersection legal; warning if they do not actually intersect |
 
 ## Minimal Example
@@ -154,7 +161,7 @@ Layout brief:
 - Scene: room identity and approximate real-world scale.
 - Structure: the floor and walls that carry the room.
 - Objects: visible objects and their rough placement.
-- Relations: primary embedded_in/adjacent/abuts/overlaps_ok edges.
+- Relations: primary embedded_in/adjacent/supports/overlaps_ok edges.
 - Assumptions: meaningful inferred choices.
 ```
 
@@ -165,11 +172,7 @@ Layout brief:
 - Write walls as thin boxes about `0.16` thick with room-height vertical extent.
 - Put door/window nodes into their wall and add an `embedded_in` edge to it.
 - Write furniture as `object` with its bottom on the ground (`C[1] = D[1]/2`).
-- Add `adjacent`/`abuts`/`overlaps_ok` edges only where the relation is real.
+- Add `adjacent`/`supports`/`overlaps_ok` edges only where the relation is real.
 - After writing, self-check that every non-floor object sits on the floor and
   no unintended collision remains.
 
-## Reference Routing
-
-- If you need the scene-graph contract, read `docs/sdk/references/quickstart.md`.
-- If you need the exact validation rules, read `docs/sdk/references/testing.md`.

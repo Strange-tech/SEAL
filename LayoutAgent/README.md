@@ -1,7 +1,7 @@
 # Layout-Agent
 
 Reconstruct an indoor layout from a single-frame indoor image: input an image, output `room.py`
-(scene-graph code: node = object OBB including walls/floors, edge = embedded / adjacent / abuts / allowed overlap).
+(scene-graph code: node = object OBB including walls/floors, edge = embedded / adjacent / supports / allowed overlap).
 
 The design idea comes from ex-articraft (Arti-Agent): use an SDK to simplify complex geometry into objects/functions the LLM can easily understand and write, and pair it with a compile tool that returns concrete error feedback, forming a "write-compile-fix" loop.
 
@@ -47,7 +47,7 @@ The perception tools (SAM3 / DA3) need a CUDA GPU and are wrapped with lazy load
 - node: `{"id", "type", "C": [x,y,z], "D": [w,h,l], "theta": [rx,ry,rz]}`,
   `type ∈ {wall, floor, door, window, object}`.
 - edge: `{"type", "src", "dst"}`,
-  `type ∈ {embedded_in, adjacent, abuts, overlaps_ok}`.
+  `type ∈ {embedded_in, adjacent, supports, overlaps_ok}`.
 - The world frame is y-up; rotation `R = Rx·Ry·Rz` (degrees); indoor objects are upright `theta=[0, yaw, 0]`.
 
 The full contract, validation rules, and exemptions are in `prompts/docs.md`.

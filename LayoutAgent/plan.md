@@ -4,7 +4,7 @@ Purpose: reconstruct an indoor layout based on the user's request.
 
 Input: a single-frame image.
 
-Output: room.py, structured as a scene graph, including nodes and edges. A node is an object OBB (including walls, floors, etc.). Edges include the following relations: embedded (a door/window inside a wall), adjacent (horizontal relation, a small gap allowed), abuts (a constrained horizontal/vertical relation, e.g. a cup on a table), allowed overlap (e.g. a chair tucked under a table — the OBBs intersect but it is allowed). Include only visible objects.
+Output: room.py, structured as a scene graph, including nodes and edges. A node is an object OBB (including walls, floors, etc.). Edges include the following relations: embedded (a door/window inside a wall), adjacent (horizontal relation, a small gap allowed), supports (one object supports another, e.g. a cup on a table; OBB faces in tight contact), allowed overlap (e.g. a chair tucked under a table — the OBBs intersect but it is allowed). Include only visible objects.
 
 Design idea: derived from ex-articraft, an agent that generates articulated objects (Arti-Agent), whose input is also text/image and whose output is model.py.
 Arti-Agent uses the cadquery library and wrote a whole SDK, including basic geometry objects, collision/floating detection, URDF export, and articulated-object objects. This SDK can be seen as a further encapsulation of cadquery, simplifying the originally complex implementation into a number of objects or functions. The SDK's role is to fit the LLM's understanding and writing, and to return concrete success or error messages so the LLM can easily modify.

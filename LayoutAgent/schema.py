@@ -11,6 +11,10 @@ The scene graph is room.py's final product, with two top-level lists:
 Coordinate convention (right-handed, y-up): +x right, +y up, +z toward the camera; the reference
 horizontal surface (the largest horizontal plane in the shot: the floor in a wide shot, the
 countertop/tabletop in a close-up) has its top at y=0, and the back wall (farthest wall) is at z=0.
+An object's intrinsic FRONT is its local +Z axis: at ``theta=[0,0,0]`` the front faces +Z (toward
+the camera), and yaw ``ry`` rotates it in the horizontal plane (ry=90 -> +X, ry=180 -> -Z, ry=-90 -> -X).
+Wall-mounted objects (TV, window, door, mirror, picture) must face INTO the room: set their ``theta``
+equal to the supporting wall's ``theta`` so the object's front matches the wall's inward face.
 Reconstruct only what is visible; if the floor is not in frame, do not declare a floor node. The
 camera frame (DA3: x right / y down / z forward, camera at origin) converts to the room frame as
 ``room = [cam_x, -cam_y + h, -cam_z + D]``, where h is the camera height above the reference
@@ -26,20 +30,28 @@ NODE_TYPES = ("wall", "floor", "door", "window", "object")
 EDGE_TYPES = (
     "embedded_in",  # embedded: a door/window inside a wall (OBBs intersect, legal)
     "adjacent",     # adjacent: horizontal relation, a small gap allowed
-    "abuts",        # abuts: constrained horizontal/vertical relation (e.g. a cup on a table)
+    "supports",     # supports: one object supports another (cup on table, cabinet on floor, picture on wall); OBB faces in tight contact (no gap)
     "overlaps_ok",  # allowed overlap: OBBs intersect but it is legal (e.g. a chair tucked under a table)
 )
 
 
-def make_node(node_id, node_type, center, dims, orientation):
-    """Construct a node. center/dims/orientation are each length-3 iterables."""
-    return {
+def make_node(node_id, node_type, center, dims, orientation, klass=None):
+    """Construct a node. center/dims/orientation are each length-3 iterables.
+
+    ``klass`` (optional) is the canonical object class, used downstream to deduplicate
+    identical instances (e.g. three "dining chair" nodes share the same class and are
+    generated once, then instantiated at each node's own center/orientation).
+    """
+    node = {
         "id": node_id,
         "type": node_type,
         "C": [float(v) for v in center],
         "D": [float(v) for v in dims],
         "theta": [float(v) for v in orientation],
     }
+    if klass:
+        node["class"] = klass
+    return node
 
 
 def make_edge(edge_type, src, dst):

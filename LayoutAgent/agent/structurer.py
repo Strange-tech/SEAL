@@ -56,7 +56,7 @@ Cover these two things explicitly, using exactly these vocabularies.
    the relation type, using these edge types only:
    - embedded_in: a door/window embedded inside a wall;
    - adjacent: two elements next to each other horizontally (e.g. neighbouring walls);
-   - abuts: one object resting/supported on another (e.g. a cup on a table);
+   - supports: one object supported by another (e.g. a cup on a table, a picture on a wall); their OBB faces must be in tight contact (no gap);
    - overlaps_ok: an allowed overlap (e.g. a chair tucked under a table).
 
 Hint: {hint}
@@ -80,7 +80,7 @@ The brief MUST explicitly name:
    its approximate prior OBB (scale: width / height / depth, and orientation), and its coarse layout
    in the room (absolute position, or position relative to other nodes, whichever is more accurate —
    use both when helpful).
-2. Edges — every spatial relation, each with its type (embedded_in / adjacent / abuts / overlaps_ok)
+2. Edges — every spatial relation, each with its type (embedded_in / adjacent / supports / overlaps_ok)
    and which two nodes it connects.
 
 End with one short closing line telling the agent how to reconcile the two: use sam3_segment +
@@ -105,9 +105,10 @@ Cover, in plain language:
 1. Nodes — every element to create, each with its node type (wall / floor / door / window / object),
    approximate size, and its layout in the room (absolute position, or position relative to other
    nodes, whichever is more accurate — use both when helpful).
-2. Edges — every spatial relation, each with its type (embedded_in / adjacent / abuts / overlaps_ok)
+2. Edges — every spatial relation, each with its type (embedded_in / adjacent / supports / overlaps_ok)
    and which two nodes it connects.
 Rules: do NOT invent elements the real room does not need; keep it grounded and concrete.
+If the request names a room shape (square / rectangle / L / U / T / L-shape / U-shape / etc.), that shape is the CLOSED boundary of the room: enumerate EVERY wall segment required to fully enclose the room with no gaps. A U-shaped room is a fully-enclosed room whose outline traces a U (two parallel legs plus a connecting bar): it needs the two outer side walls, the back wall, the two leg-end walls, and the two inner notch walls — never just 3 open walls.
 Output only the brief, no preamble.
 User request: {task}
 """

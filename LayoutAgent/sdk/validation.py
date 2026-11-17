@@ -7,7 +7,7 @@ Returns three tiers of diagnostics ``(failures, warnings, notes)``:
 
 Exemption rules (see plan.md line 15, "embedded/overlap relations are exempt"):
 - ``embedded_in`` / ``overlaps_ok``: OBB intersection is legal, so the collision check is skipped
-- the ``src`` of an ``abuts`` edge: supported, so the floating check is skipped
+- the ``src`` of a ``supports`` edge: supported, so the floating check is skipped
 - ``floor`` is the reference surface and never participates in collision; ``door``/``window`` are embedded in walls and skip the floating check
 
 Image-consistency check ``validate_image_reprojection``: reprojects each object OBB back to the image and computes the IoU against SAM3's 2D boxes. A deviation (1 - IoU) below the threshold is ok, otherwise a warning.
@@ -17,7 +17,7 @@ import numpy as np
 
 import schema
 from .alignment import estimate_room_transform
-from .geometry import obbs_overlap
+from .geometry import obbs_overlap, obbs_gap
 from .scene import project_obb_to_image
 
 
@@ -48,7 +48,7 @@ def _iou(a, b):
     return inter / union if union > 1e-9 else 0.0
 
 
-def validate_scene_graph(graph, floor_tolerance=0.05):
+def validate_scene_graph(graph, floor_tolerance=0.05, supports_tolerance=0.02):
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
     failures, warnings, notes = [], [], []
@@ -93,12 +93,12 @@ def validate_scene_graph(graph, floor_tolerance=0.05):
 
     # ---- exemption sets ----
     exempt = set()      # embedded_in / overlaps_ok: OBB intersection is legal
-    supported = set()   # abuts src: supported, skip the floating check
+    supported = set()   # supports src: supported, skip the floating check
     for e in edges:
         pair = frozenset((e["src"], e["dst"]))
         if e["type"] in ("embedded_in", "overlaps_ok"):
             exempt.add(pair)
-        if e["type"] == "abuts":
+        if e["type"] == "supports":
             supported.add(e["src"])
 
     # ---- collision check (floor excluded; embedded_in/overlaps_ok exempt) ----
@@ -131,6 +131,16 @@ def validate_scene_graph(graph, floor_tolerance=0.05):
                     f"floating: {n['id']} bottom={bottom:.3f} above floor top={floor_top:.3f}"
                 )
 
+    # ---- supports contact (failure): src must sit tightly against dst ----
+    for e in edges:
+        if e["type"] == "supports":
+            a, b = node_map[e["src"]], node_map[e["dst"]]
+            gap = obbs_gap((a["C"], a["D"], a["theta"]), (b["C"], b["D"], b["theta"]))
+            if gap > supports_tolerance:
+                failures.append(
+                    f"supports but not in contact: {e['src']} vs {e['dst']} (gap={gap:.3f} m)"
+                )
+
     # ---- relation-geometry consistency (warning) ----
     for e in edges:
         if e["type"] == "overlaps_ok":
@@ -141,68 +151,68 @@ def validate_scene_graph(graph, floor_tolerance=0.05):
     return failures, warnings, notes
 
 
-def validate_image_reprojection(graph, reconstruction, boxes, image_size=None,
-                                iou_threshold=0.5, extrinsics_scene=None):
-    """Reproject object-node OBBs back to the image and compare them against SAM3 boxes; returns ``(warnings, notes)``.
+# def validate_image_reprojection(graph, reconstruction, boxes, image_size=None,
+#                                 iou_threshold=0.5, extrinsics_scene=None):
+#     """Reproject object-node OBBs back to the image and compare them against SAM3 boxes; returns ``(warnings, notes)``.
 
-    Args:
-    - ``reconstruction``: Reconstruction (holds intrinsics/extrinsics and the depth width/height);
-    - ``boxes``: ``{name: [x1,y1,x2,y2]}`` (SAM3 boxes, original-resolution xyxy);
-    - ``image_size``: ``(W, H)`` original image size, used to scale the depth-resolution projection box to the original image;
-    - ``iou_threshold``: deviation threshold, ``dev = 1 - best IoU``; ``dev >= threshold`` raises a warning;
-    - ``extrinsics_scene``: room-frame -> camera-frame w2c transform (3x4). When omitted, it is estimated with
-      ``estimate_room_transform`` from the reference horizontal surface and, when available, a confident
-      back wall (see :mod:`sdk.alignment`).
+#     Args:
+#     - ``reconstruction``: Reconstruction (holds intrinsics/extrinsics and the depth width/height);
+#     - ``boxes``: ``{name: [x1,y1,x2,y2]}`` (SAM3 boxes, original-resolution xyxy);
+#     - ``image_size``: ``(W, H)`` original image size, used to scale the depth-resolution projection box to the original image;
+#     - ``iou_threshold``: deviation threshold, ``dev = 1 - best IoU``; ``dev >= threshold`` raises a warning;
+#     - ``extrinsics_scene``: room-frame -> camera-frame w2c transform (3x4). When omitted, it is estimated with
+#       ``estimate_room_transform`` from the reference horizontal surface and, when available, a confident
+#       back wall (see :mod:`sdk.alignment`).
 
-    The room frame (y-up) differs from the camera frame (y-down), so the room-frame extrinsic must be applied
-    before reprojection; the up direction is fixed by the reference horizontal surface, while depth and x-offset
-    are solved image-anchored (yaw=0) or from a confident back wall.
-    """
-    warnings, notes = [], []
-    objects = [n for n in graph.get("nodes", []) if n.get("type") == "object"]
-    if not objects:
-        notes.append("image reprojection check skipped: no object nodes")
-        return warnings, notes
+#     The room frame (y-up) differs from the camera frame (y-down), so the room-frame extrinsic must be applied
+#     before reprojection; the up direction is fixed by the reference horizontal surface, while depth and x-offset
+#     are solved image-anchored (yaw=0) or from a confident back wall.
+#     """
+#     warnings, notes = [], []
+#     objects = [n for n in graph.get("nodes", []) if n.get("type") == "object"]
+#     if not objects:
+#         notes.append("image reprojection check skipped: no object nodes")
+#         return warnings, notes
 
-    K = np.asarray(reconstruction.intrinsics, dtype=float)
-    if extrinsics_scene is None:
-        extrinsics_scene = estimate_room_transform(reconstruction, graph)
-        if extrinsics_scene is None:
-            return [], ["image reprojection check skipped: no reference horizontal surface detected"]
-    ext = np.asarray(extrinsics_scene, dtype=float)
-    dw, dh = reconstruction.width, reconstruction.height
-    if image_size is not None and dw > 0 and dh > 0:
-        sx = image_size[0] / dw
-        sy = image_size[1] / dh
-    else:
-        sx = sy = 1.0
+#     K = np.asarray(reconstruction.intrinsics, dtype=float)
+#     if extrinsics_scene is None:
+#         extrinsics_scene = estimate_room_transform(reconstruction, graph)
+#         if extrinsics_scene is None:
+#             return [], ["image reprojection check skipped: no reference horizontal surface detected"]
+#     ext = np.asarray(extrinsics_scene, dtype=float)
+#     dw, dh = reconstruction.width, reconstruction.height
+#     if image_size is not None and dw > 0 and dh > 0:
+#         sx = image_size[0] / dw
+#         sy = image_size[1] / dh
+#     else:
+#         sx = sy = 1.0
 
-    box_list = [(name, np.asarray(b, dtype=float)) for name, b in (boxes or {}).items()]
+#     box_list = [(name, np.asarray(b, dtype=float)) for name, b in (boxes or {}).items()]
 
-    for n in objects:
-        obb = {"center": n["C"], "dims": n["D"], "theta": n["theta"]}
-        bbox = project_obb_to_image(obb, K, ext)
-        if bbox is None:
-            warnings.append(f"reprojection: {n['id']} behind camera (no 2D projection)")
-            continue
-        bbox = bbox * np.array([sx, sy, sx, sy])
-        best_iou, best_name = 0.0, None
-        for name, b in box_list:
-            iou = _iou(bbox, b)
-            if iou > best_iou:
-                best_iou, best_name = iou, name
-        dev = 1.0 - best_iou
-        if best_name is None:
-            warnings.append(
-                f"reprojection: {n['id']} no SAM3 detection (best IoU={best_iou:.2f})"
-            )
-        elif best_iou < iou_threshold:
-            warnings.append(
-                f"reprojection: {n['id']} vs SAM3 {best_name!r} IoU={best_iou:.2f} "
-                f"(dev {dev:.2f} >= {iou_threshold:.2f})"
-            )
-        else:
-            notes.append(
-                f"[ok] {n['id']} vs SAM3 {best_name!r} IoU={best_iou:.2f} (dev {dev:.2f})"
-            )
-    return warnings, notes
+#     for n in objects:
+#         obb = {"center": n["C"], "dims": n["D"], "theta": n["theta"]}
+#         bbox = project_obb_to_image(obb, K, ext)
+#         if bbox is None:
+#             warnings.append(f"reprojection: {n['id']} behind camera (no 2D projection)")
+#             continue
+#         bbox = bbox * np.array([sx, sy, sx, sy])
+#         best_iou, best_name = 0.0, None
+#         for name, b in box_list:
+#             iou = _iou(bbox, b)
+#             if iou > best_iou:
+#                 best_iou, best_name = iou, name
+#         dev = 1.0 - best_iou
+#         if best_name is None:
+#             warnings.append(
+#                 f"reprojection: {n['id']} no SAM3 detection (best IoU={best_iou:.2f})"
+#             )
+#         elif best_iou < iou_threshold:
+#             warnings.append(
+#                 f"reprojection: {n['id']} vs SAM3 {best_name!r} IoU={best_iou:.2f} "
+#                 f"(dev {dev:.2f} >= {iou_threshold:.2f})"
+#             )
+#         else:
+#             notes.append(
+#                 f"[ok] {n['id']} vs SAM3 {best_name!r} IoU={best_iou:.2f} (dev {dev:.2f})"
+#             )
+#     return warnings, notes

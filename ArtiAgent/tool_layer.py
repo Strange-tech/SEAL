@@ -10,6 +10,7 @@ from agent.model_contract import missing_required_model_contract
 from agent.probe_layer import run_probe
 from agent.examples import search_examples
 from agent.workspace_docs import build_virtual_workspace
+from agent.bbox import compute_model_real_bbox
 
 # --- Tool Layer ---
 
@@ -372,19 +373,18 @@ class BashTool:
 		return text
 
 class CompileModelTool:
+	def __init__(self, box=None):
+		self.box = box
+
 	def definition(self):
 		return {
 			"name": "compile_model",
 			"description": (
-				"Run full model compile and QC on the current model.py.\n\n"
-				"Use this after one or more edits when you want full compile/test feedback.\n"
-				"The harness automatically runs baseline sanity/QC checks for model validity, "
-				"exactly one root part, mesh assets, floating disconnected part groups, "
-				"disconnected geometry islands inside a part, and current-pose real 3D overlaps.\n"
-				"Do not manually author that baseline stack in run_tests(); reserve run_tests() "
-				"for exact checks, targeted poses, and explicit allowances.\n\n"
-				"The tool returns the same structured <compile_signals> block used by the harness "
-				"for clean success, warnings, or failures."
+				"Run full model compile and QC on the current model.py. "
+				"Use this after one or more edits when you want full compile/test feedback. "
+				"The harness automatically runs baseline sanity/QC checks for model validity, exactly one root part, mesh assets, floating disconnected part groups, disconnected geometry islands inside a part, and current-pose real 3D overlaps. "
+				"Do not manually author that baseline stack in run_tests(); reserve run_tests() for exact checks, targeted poses, and explicit allowances. "
+				"The tool returns the same structured <compile_signals> block used by the harness for clean success, warnings, or failures. When a --box constraint is set, the result also includes a <box_delta> report comparing the layout box to the object's actual measured box."
 			),
 			"parameters": {
 				"type": "object",
@@ -406,10 +406,37 @@ class CompileModelTool:
 				rewrite_visual_glb=False,
 				asset_root=Path(WORK_DIR) / ".compile_tmp",
 			)
-			return render_compile_signals(report.signal_bundle)
+			out = render_compile_signals(report.signal_bundle)
 		except Exception as e:
-			return render_compile_signals(compile_signal_bundle_from_exception(e))
+			out = render_compile_signals(compile_signal_bundle_from_exception(e))
+		if self.box is not None:
+			out += chr(10) + chr(10) + self._box_delta_text()
+		return out
 
+	def _box_delta_text(self):
+		try:
+			center, dims = compute_model_real_bbox(
+				Path(WORK_DIR) / "model.py",
+				asset_root=Path(WORK_DIR) / ".bbox_tmp",
+			)
+		except Exception as e:
+			return "<box_delta>" + chr(10) + "(actual box not computable: " + str(e) + ")" + chr(10) + "</box_delta>"
+		tc = self.box["center"]
+		td = self.box["dims"]
+		tr = self.box["rpy"]
+		pos = [round(tc[i] - center[i], 4) for i in range(3)]
+		scale = [round(td[i] / dims[i], 4) if dims[i] else None for i in range(3)]
+		rot = [round(tr[i], 4) for i in range(3)]
+		return chr(10).join([
+			"<box_delta>",
+			"target box (from layout --box): center=" + str(tc) + " dims=" + str(td) + " rpy=" + str(tr),
+			"actual box (measured):         center=" + str([round(v, 4) for v in center]) + " dims=" + str([round(v, 4) for v in dims]),
+			"position delta (target - actual): " + str(pos),
+			"scale delta (target / actual): " + str(scale),
+			"rotation delta (target rpy, object authored at rpy=[0,0,0]): " + str(rot),
+			"Placement note: position/rotation deltas are the scene placement, applied separately by the renderer (the object stays at the origin). Judge only the SIZE: is the actual dims acceptable for the requested object? If yes, conclude; if not, adjust the model size and recompile.",
+			"</box_delta>",
+		])
 
 class ProbeModelTool:
 	def definition(self):
@@ -495,6 +522,47 @@ class ProbeModelTool:
 			if result.get("stderr"):
 				parts.append("--- stderr ---\n" + result["stderr"])
 		return "\n".join(parts)
+
+
+class RealBboxTool:
+	def definition(self):
+		return {
+			"name": "real_bbox",
+			"description": (
+				"Compute the real (joint-range) bounding box of the current model.py: the "
+				"axis-aligned box that contains every part's geometry across the full range of "
+				"each joint's motion (the swept volume). Returns {center:[cx,cy,cz], dims:[w,h,l]} "
+				"in the y-up / +z-forward world frame. Use it to verify the object fits the "
+				"--box constraint, or to report the true footprint back to the layout engine."
+			),
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"samples": {"type": "integer", "description": "Cap on pose combinations to sample (optional; default enumerates the full joint-range product)"},
+				},
+			},
+		}
+
+	def execute(self, args):
+		try:
+			params = json.loads(args)
+		except json.JSONDecodeError as e:
+			return "Error: Arguments are not valid JSON: " + str(e)
+		samples = params.get("samples")
+		if samples is not None:
+			samples = int(samples)
+		try:
+			center, dims = compute_model_real_bbox(
+				Path(WORK_DIR) / "model.py",
+				asset_root=Path(WORK_DIR) / ".bbox_tmp",
+				samples=samples,
+			)
+		except Exception as e:
+			return "Error: real_bbox failed: " + str(e)
+		return json.dumps(
+			{"center": [round(float(v), 6) for v in center], "dims": [round(float(v), 6) for v in dims]},
+			indent=2,
+		)
 
 
 class FindExamplesTool:

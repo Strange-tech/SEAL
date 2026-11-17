@@ -5,207 +5,208 @@ import cadquery as cq
 from sdk import (
     ArticulatedObject,
     ArticulationType,
-    Box,
-    Material,
-    MotionLimits,
+    ExtrudeWithHolesGeometry,
+    MeshGeometry,
     Origin,
     TestContext,
     TestReport,
-    mesh_from_cadquery,
+    mesh_from_geometry,
+    rounded_rect_profile,
+    tessellate_cadquery,
 )
 
 # ---------------------------------------------------------------------------
-# Overall envelope (metres). Front face of the cabinet points toward +Y.
+# Three-seat sofa, modelled as a static assembly of FIXED joints.
+#
+# Convention: world is y-up, +z is front, +x is width.  The whole object is
+# authored so its geometric centre sits at the world origin (0,0,0).
+#
+# Design coordinates use floor = y 0 (easy to reason about); SHIFT_Y re-centres
+# the finished object on the origin.
 # ---------------------------------------------------------------------------
-W = 0.700          # carcass width  (x: -0.350 .. +0.350)
-D = 0.580          # carcass depth  (y: -0.290 .. +0.290)
-H = 0.840          # carcass height (z:  0.000 .. +0.840)
-WALL = 0.018       # panel thickness
-FRONT_FACE = D / 2.0
 
-# Face-frame openings (cut through the 20 mm front frame plate)
-DOOR_OPEN = (-0.035, 0.295, 0.060, 0.800)     # x0, x1, z0, z1
-DRW_OPEN = (-0.295, -0.080, 0.060, 0.800)     # x0, x1, z0, z1
-
-# Door leaf (in the door part frame, hinge line at local x = 0)
-DOOR_W = 0.336
-DOOR_T = 0.019
-DOOR_H = 0.740
-DOOR_SEAT = 0.0005        # slight embed into the face-frame plane (hidden)
-
-# Drawer stack: four fronts filling the drawer opening
-DRW_PANEL_W = 0.221
-DRW_PANEL_H = 0.1805
-DRW_GAP = 0.006
-DRW_T = 0.019
-DRW_BOX_W = 0.200
-DRW_BOX_H = 0.110
-DRW_BOX_D = 0.500
-DRW_TRAVEL = 0.320
-
-
-def _box(x0, y0, z0, dx, dy, dz) -> cq.Solid:
-    return cq.Solid.makeBox(dx, dy, dz, cq.Vector(x0, y0, z0))
+SHIFT_Y = -0.425  # floor(0)..back-top(0.85) -> -0.425..+0.425
 
 
 # ---------------------------------------------------------------------------
-# Carcass: hollow shell + 20 mm face frame with two openings + divider + shelf
+# mesh helpers
 # ---------------------------------------------------------------------------
-def _carcass_solid() -> cq.Solid:
-    outer = _box(-W / 2, -D / 2, 0.0, W, D, H)
-    void = _box(
-        -W / 2 + WALL, -D / 2 + WALL, WALL,
-        W - 2 * WALL, D - 2 * WALL, H - 2 * WALL,
+def _yup(verts, faces, name):
+    """Convert a CadQuery (z-up) tessellation into a y-up sdk Mesh."""
+    v = [(x, z, -y) for (x, y, z) in verts]
+    return mesh_from_geometry(MeshGeometry(vertices=list(v), faces=list(faces)), name)
+
+
+def rounded_block(w, h, d, r, name, tol=0.0008):
+    """A box (w x h x d) with all 12 edges rounded -> upholstered read.
+
+    Built in cq (z-up) as box(w, d, h); after the y-up swap the world extents
+    are exactly (w, h, d), centred on the origin.
+    """
+    shape = cq.Workplane("XY").box(w, d, h).edges().fillet(r)
+    verts, faces = tessellate_cadquery(shape.val(), tolerance=tol)
+    return _yup(verts, faces, name)
+
+
+def tapered_leg(r_bottom, r_top, h, name, tol=0.0006):
+    """Truncated cone leg, base at y=0, top at y=h (widest at the top)."""
+    solid = cq.Solid.makeCone(r_bottom, r_top, h)
+    verts, faces = tessellate_cadquery(solid, tolerance=tol)
+    return _yup(verts, faces, name)
+
+
+PIP_E = 0.0025   # piping protrusion beyond the cushion side
+PIP_I = 0.004    # piping embed depth into the cushion body
+
+
+def piping_ring(w, d, rc, thick, name):
+    """Light piping / welt band around a cushion mid-seam (lies in x-z plane)."""
+    outer = rounded_rect_profile(w + 2 * PIP_E, d + 2 * PIP_E, rc + PIP_E)
+    inner = rounded_rect_profile(
+        max(w - 2 * PIP_I, 1e-3),
+        max(d - 2 * PIP_I, 1e-3),
+        max(rc - PIP_I, 0.002),
     )
-    door_open = _box(
-        DOOR_OPEN[0], FRONT_FACE - 0.040, DOOR_OPEN[2],
-        DOOR_OPEN[1] - DOOR_OPEN[0], 0.050, DOOR_OPEN[3] - DOOR_OPEN[2],
+    geom = ExtrudeWithHolesGeometry(outer, [inner], thick, center=True)
+    v = [(x, z, -y) for (x, y, z) in geom.vertices]
+    return mesh_from_geometry(
+        MeshGeometry(vertices=list(v), faces=list(geom.faces)), name
     )
-    drw_open = _box(
-        DRW_OPEN[0], FRONT_FACE - 0.040, DRW_OPEN[2],
-        DRW_OPEN[1] - DRW_OPEN[0], 0.050, DRW_OPEN[3] - DRW_OPEN[2],
-    )
-    shell = outer.cut(void).cut(door_open).cut(drw_open)
-
-    # vertical divider between the door bay and the drawer bay
-    divider = _box(-0.066, -D / 2 + WALL, WALL, WALL, D - 2 * WALL, H - 2 * WALL)
-
-    # one fixed interior shelf in the door bay
-    shelf = _box(-0.048, -D / 2 + WALL, 0.420, 0.380, D - 2 * WALL, WALL)
-
-    return shell.fuse(divider).fuse(shelf)
-
-
-def _countertop_solid() -> cq.Solid:
-    # caps the carcass, overhangs slightly, embeds 2 mm into the carcass top
-    return _box(-W / 2 - 0.020, -D / 2 - 0.010, H - 0.002, W + 0.040, D + 0.032, 0.037)
 
 
 # ---------------------------------------------------------------------------
-# Shaker door leaf, authored in the door part frame (hinge line at x = 0)
+# dimensions (design coords, floor = 0)
 # ---------------------------------------------------------------------------
-def _door_solid() -> cq.Solid:
-    leaf = _box(-DOOR_W, -DOOR_SEAT, 0.0, DOOR_W, DOOR_T + DOOR_SEAT, DOOR_H)
-    # recessed centre field on the front face -> shaker look
-    recess = _box(-DOOR_W + 0.024, 0.011, 0.024, DOOR_W - 0.048, 0.012, DOOR_H - 0.048)
-    return leaf.cut(recess)
+W_HALF = 1.18                    # total width 2.36
+Z_BACK, Z_FRONT = -0.46, 0.46    # depth 0.92
+
+BASE_Y0, BASE_Y1 = 0.10, 0.30    # upholstered base
+SEAT_TOP = 0.45                  # seat cushion top
+ARM_TOP = 0.65
+BACK_TOP = 0.85
+
+ARM_W = 0.19
+ARM_XC = 1.18 - ARM_W / 2        # +/-1.085
+
+BACK_T = 0.14                    # back frame thickness
+BACK_Z0 = Z_BACK                 # -0.46
+BACK_Z1 = Z_BACK + BACK_T        # -0.32
+
+CUSH_W = 0.64
+CUSH_XC = (-0.66, 0.0, 0.66)
+
+SEAT_D = 0.62
+SEAT_ZC = BACK_Z1 + SEAT_D / 2   # -0.01  (in front of the back frame)
+SEAT_Y0, SEAT_Y1 = BASE_Y1, SEAT_TOP
+
+BACKCUSH_T = 0.18
+BACKCUSH_Y0, BACKCUSH_Y1 = SEAT_TOP, 0.78
+BACKCUSH_ZC = BACK_Z1 + BACKCUSH_T / 2   # -0.23  (in front of the back frame)
+
+LEG_H = 0.10
 
 
-def _door_pull_solid() -> cq.Solid:
-    # small dark vertical pull near the door's free (right) edge, upper area
-    bar = _box(-0.307, 0.028, 0.600, 0.014, 0.010, 0.110)
-    stand_a = _box(-0.303, 0.010, 0.615, 0.006, 0.019, 0.014)
-    stand_b = _box(-0.303, 0.010, 0.681, 0.006, 0.019, 0.014)
-    return bar.fuse(stand_a).fuse(stand_b)
-
-
-# ---------------------------------------------------------------------------
-# Drawer front + hollow drawer box, authored in the drawer part frame
-# ---------------------------------------------------------------------------
-def _drawer_front_solid() -> cq.Solid:
-    panel = _box(
-        -DRW_PANEL_W / 2, -DRW_SEAT, -DRW_PANEL_H / 2,
-        DRW_PANEL_W, DRW_T + DRW_SEAT, DRW_PANEL_H,
+def _block(part, w, h, d, r, xc, yc, zc, mat, name):
+    part.visual(
+        rounded_block(w, h, d, r, name),
+        origin=Origin(xyz=(xc, yc + SHIFT_Y, zc)),
+        material=mat,
+        name=name,
     )
-    field = _box(
-        -DRW_PANEL_W / 2 + 0.018, 0.015, -DRW_PANEL_H / 2 + 0.016,
-        DRW_PANEL_W - 0.036, 0.010, DRW_PANEL_H - 0.032,
-    )
-    return panel.cut(field)
-
-
-DRW_SEAT = DOOR_SEAT
-
-
-def _drawer_box_solid() -> cq.Solid:
-    # front of the box is tucked 0.5 mm into the front panel
-    outer = _box(-DRW_BOX_W / 2, -(DRW_BOX_D + 0.001), -DRW_BOX_H / 2,
-                 DRW_BOX_W, DRW_BOX_D + 0.0005, DRW_BOX_H)
-    inner = _box(-DRW_BOX_W / 2 + 0.012, -(DRW_BOX_D + 0.001) + 0.012,
-                 -DRW_BOX_H / 2 + 0.012,
-                 DRW_BOX_W - 0.024, DRW_BOX_D - 0.024, DRW_BOX_H)
-    return outer.cut(inner)
 
 
 def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject(name="wooden_cabinet_with_drawers")
+    model = ArticulatedObject(name="three_seat_sofa")
 
-    wood_carcass = model.material("oak_carcass", rgba=(0.46, 0.30, 0.16, 1.0))
-    wood_door = model.material("oak_door", rgba=(0.52, 0.35, 0.19, 1.0))
-    wood_drawer = model.material("oak_drawer", rgba=(0.56, 0.38, 0.21, 1.0))
-    wood_top = model.material("light_top", rgba=(0.74, 0.65, 0.48, 1.0))
-    dark_metal = model.material("dark_metal", rgba=(0.10, 0.10, 0.11, 1.0))
+    fabric = model.material(name="fabric", rgba=(0.71, 0.69, 0.63, 1.0))
+    piping = model.material(name="piping", rgba=(0.82, 0.80, 0.75, 1.0))
+    walnut = model.material(name="walnut", rgba=(0.21, 0.12, 0.07, 1.0))
 
-    # ---------------- carcass (root, fixed) ----------------
-    carcass = model.part("carcass")
-    carcass.visual(
-        mesh_from_cadquery(_carcass_solid(), "carcass_body"),
-        name="carcass_body",
-        material=wood_carcass,
-    )
-    carcass.visual(
-        mesh_from_cadquery(_countertop_solid(), "countertop"),
-        name="countertop",
-        material=wood_top,
+    # --- root: upholstered base frame -------------------------------------
+    frame = model.part("frame")
+    _block(
+        frame, 2.36, BASE_Y1 - BASE_Y0, 0.92, 0.03,
+        0.0, (BASE_Y0 + BASE_Y1) / 2, 0.0,
+        fabric, "base_frame",
     )
 
-    # ---------------- hinged door over the left bay ----------------
-    door = model.part("door")
-    door.visual(
-        mesh_from_cadquery(_door_solid(), "door_leaf"),
-        name="door_leaf",
-        material=wood_door,
-    )
-    door.visual(
-        mesh_from_cadquery(_door_pull_solid(), "door_pull"),
-        name="door_pull",
-        material=dark_metal,
-    )
+    parts = {"frame": frame}
 
-    model.articulation(
-        "carcass_to_door",
-        ArticulationType.REVOLUTE,
-        parent=carcass,
-        child=door,
-        # hinge line on the outer (+X) edge of the door, on the frame front plane
-        origin=Origin(xyz=(0.298, FRONT_FACE - DOOR_SEAT, 0.058)),
-        # leaf extends along -X from the hinge; -Z makes positive q swing it out
-        axis=(0.0, 0.0, -1.0),
-        motion_limits=MotionLimits(effort=25.0, velocity=1.5, lower=0.0, upper=1.55),
+    # --- back frame -------------------------------------------------------
+    back_frame = model.part("back_frame")
+    _block(
+        back_frame, 1.98, BACK_TOP - BASE_Y1, BACK_T, 0.04,
+        0.0, (BASE_Y1 + BACK_TOP) / 2, (BACK_Z0 + BACK_Z1) / 2,
+        fabric, "back_frame",
     )
+    parts["back_frame"] = back_frame
 
-    # ---------------- four drawers in the right bay ----------------
-    centres = (
-        0.800 - DRW_PANEL_H / 2,
-        0.800 - DRW_PANEL_H - DRW_GAP - DRW_PANEL_H / 2,
-        0.800 - 2 * (DRW_PANEL_H + DRW_GAP) - DRW_PANEL_H / 2,
-        0.800 - 3 * (DRW_PANEL_H + DRW_GAP) - DRW_PANEL_H / 2,
-    )
-    names = ("top_drawer", "upper_drawer", "lower_drawer", "bottom_drawer")
-    bay_centre_x = (DRW_OPEN[0] + DRW_OPEN[1]) / 2.0
-
-    for name, cz in zip(names, centres):
-        drawer = model.part(name)
-        drawer.visual(
-            mesh_from_cadquery(_drawer_front_solid(), name + "_front"),
-            name="drawer_front",
-            material=wood_drawer,
+    # --- arms -------------------------------------------------------------
+    for i, xc in enumerate((-ARM_XC, ARM_XC)):
+        arm = model.part(f"arm_{i}")
+        _block(
+            arm, ARM_W, ARM_TOP - BASE_Y1, 0.92, 0.05,
+            xc, (BASE_Y1 + ARM_TOP) / 2, 0.0,
+            fabric, f"arm_{i}",
         )
-        drawer.visual(
-            mesh_from_cadquery(_drawer_box_solid(), name + "_box"),
-            name="drawer_box",
-            material=wood_carcass,
+        parts[f"arm_{i}"] = arm
+
+    # --- legs -------------------------------------------------------------
+    leg_xs = (-1.02, 1.02)
+    leg_zs = (-0.40, 0.40)
+    n = 0
+    for lx in leg_xs:
+        for lz in leg_zs:
+            leg = model.part(f"leg_{n}")
+            leg.visual(
+                tapered_leg(0.018, 0.030, LEG_H, f"leg_{n}"),
+                origin=Origin(xyz=(lx, SHIFT_Y, lz)),
+                material=walnut,
+                name=f"leg_{n}",
+            )
+            parts[f"leg_{n}"] = leg
+            n += 1
+
+    # --- seat cushions ----------------------------------------------------
+    for i, xc in enumerate(CUSH_XC):
+        c = model.part(f"seat_cushion_{i}")
+        yc = (SEAT_Y0 + SEAT_Y1) / 2
+        _block(
+            c, CUSH_W, SEAT_Y1 - SEAT_Y0, SEAT_D, 0.045,
+            xc, yc, SEAT_ZC, fabric, f"seat_cushion_{i}",
         )
+        c.visual(
+            piping_ring(CUSH_W, SEAT_D, 0.045, 0.008, f"seat_piping_{i}"),
+            origin=Origin(xyz=(xc, yc + SHIFT_Y, SEAT_ZC)),
+            material=piping, name=f"seat_piping_{i}",
+        )
+        parts[f"seat_cushion_{i}"] = c
+
+    # --- back cushions ----------------------------------------------------
+    for i, xc in enumerate(CUSH_XC):
+        c = model.part(f"back_cushion_{i}")
+        yc = (BACKCUSH_Y0 + BACKCUSH_Y1) / 2
+        _block(
+            c, CUSH_W, BACKCUSH_Y1 - BACKCUSH_Y0, BACKCUSH_T, 0.05,
+            xc, yc, BACKCUSH_ZC, fabric, f"back_cushion_{i}",
+        )
+        c.visual(
+            piping_ring(CUSH_W, BACKCUSH_T, 0.05, 0.008, f"back_piping_{i}"),
+            origin=Origin(xyz=(xc, yc + SHIFT_Y, BACKCUSH_ZC)),
+            material=piping, name=f"back_piping_{i}",
+        )
+        parts[f"back_cushion_{i}"] = c
+
+    # --- fixed joints (authored in world coords, identity child frames) ---
+    for name, part in parts.items():
+        if name == "frame":
+            continue
         model.articulation(
-            "carcass_to_" + name,
-            ArticulationType.PRISMATIC,
-            parent=carcass,
-            child=drawer,
-            origin=Origin(xyz=(bay_centre_x, FRONT_FACE - DRW_SEAT, cz)),
-            axis=(0.0, 1.0, 0.0),
-            motion_limits=MotionLimits(
-                effort=120.0, velocity=0.30, lower=0.0, upper=DRW_TRAVEL
-            ),
+            f"frame_to_{name}",
+            ArticulationType.FIXED,
+            parent=frame,
+            child=part,
+            origin=Origin(),
         )
 
     return model
@@ -214,92 +215,43 @@ def build_object_model() -> ArticulatedObject:
 def run_tests() -> TestReport:
     ctx = TestContext(object_model)
 
-    carcass = object_model.get_part("carcass")
-    door = object_model.get_part("door")
-    door_hinge = object_model.get_articulation("carcass_to_door")
-    drawers = [
-        object_model.get_part(n)
-        for n in ("top_drawer", "upper_drawer", "lower_drawer", "bottom_drawer")
-    ]
-    slides = [object_model.get_articulation("carcass_to_" + d.name) for d in drawers]
+    try:
+        model = object_model
+    except NameError:
+        model = build_object_model()
 
-    # --- door is seated on the face frame (only a hidden seating embed) ---
+    frame = model.get_part("frame")
+
+    # three seat modules + three back cushions
+    for i in range(3):
+        ctx.check(f"seat_cushion_{i} present", model.get_part(f"seat_cushion_{i}") is not None)
+        ctx.check(f"back_cushion_{i} present", model.get_part(f"back_cushion_{i}") is not None)
+
+    # every functional part is a direct fixed child of the root
+    for name in (
+        "back_frame", "arm_0", "arm_1", "leg_0", "leg_1", "leg_2", "leg_3",
+        "seat_cushion_0", "seat_cushion_1", "seat_cushion_2",
+        "back_cushion_0", "back_cushion_1", "back_cushion_2",
+    ):
+        joint = model.get_articulation(f"frame_to_{name}")
+        ctx.check(f"{name} fixed to root", joint.articulation_type == ArticulationType.FIXED)
+
+    # cushions seat onto the base and lean on the back frame
+    for i in range(3):
+        ctx.expect_contact(model.get_part(f"seat_cushion_{i}"), frame)
+        ctx.expect_contact(model.get_part(f"back_cushion_{i}"), model.get_part("back_frame"))
+
+    # arms stand on the base frame
+    ctx.expect_contact(model.get_part("arm_0"), frame)
+    ctx.expect_contact(model.get_part("arm_1"), frame)
+    # legs meet the underside of the base
+    for n in range(4):
+        ctx.expect_contact(model.get_part(f"leg_{n}"), frame)
+
+    # seat cushions rest just above the base top, back cushions above seats
     ctx.expect_gap(
-        door, carcass,
-        axis="y",
-        positive_elem="door_leaf",
-        negative_elem="carcass_body",
-        max_gap=0.0025,
-        max_penetration=0.0025,
-        name="door sits on the face frame plane",
-    )
-    ctx.expect_overlap(
-        door, carcass,
-        axes="xz",
-        elem_a="door_leaf",
-        elem_b="carcass_body",
-        min_overlap=0.20,
-        name="door covers the door opening",
-    )
-
-    # --- every drawer front is seated on the face frame ---
-    for drawer in drawers:
-        ctx.expect_gap(
-            drawer, carcass,
-            axis="y",
-            positive_elem="drawer_front",
-            negative_elem="carcass_body",
-            max_gap=0.0025,
-            max_penetration=0.0025,
-            name=f"{drawer.name} front sits on the face frame",
-        )
-
-    # --- door opens outward about its vertical hinge ---
-    rest_door = ctx.part_element_world_aabb(door, elem="door_leaf")
-    with ctx.pose({door_hinge: door_hinge.motion_limits.upper}):
-        open_door = ctx.part_element_world_aabb(door, elem="door_leaf")
-        ctx.expect_gap(
-            door, carcass,
-            axis="y",
-            positive_elem="door_leaf",
-            negative_elem="carcass_body",
-            max_gap=0.0,
-            max_penetration=0.002,
-            name="open door does not bear into the face frame",
-        )
-    ctx.check(
-        "door swings forward when opened",
-        rest_door is not None and open_door is not None
-        and open_door[1][1] > rest_door[1][1] + 0.25,
-        details=f"rest={rest_door}, open={open_door}",
-    )
-
-    # --- each drawer pulls out toward the viewer and stays engaged ---
-    for drawer, slide in zip(drawers, slides):
-        rest = ctx.part_world_position(drawer)
-        with ctx.pose({slide: DRW_TRAVEL}):
-            extended = ctx.part_world_position(drawer)
-            box_aabb = ctx.part_element_world_aabb(drawer, elem="drawer_box")
-        ctx.check(
-            f"{drawer.name} pulls out toward the viewer",
-            rest is not None and extended is not None
-            and extended[1] > rest[1] + 0.30,
-            details=f"rest={rest}, extended={extended}",
-        )
-        ctx.check(
-            f"{drawer.name} box stays in the carcass at full extension",
-            box_aabb is not None and box_aabb[0][1] < 0.27,
-            details=f"box_aabb={box_aabb}",
-        )
-
-    # --- drawers are fully inserted along the slide axis at rest ---
-    ctx.expect_overlap(
-        drawers[3], carcass,
-        axes="y",
-        elem_a="drawer_box",
-        elem_b="carcass_body",
-        min_overlap=0.40,
-        name="collapsed drawer box is deeply inserted",
+        model.get_part("seat_cushion_1"), frame, axis="y",
+        max_gap=0.002, max_penetration=0.002,
     )
 
     return ctx.report()

@@ -79,6 +79,7 @@ GEOMETRY
 COORDINATE SYSTEM (RIGHT-HANDED)
 - The world frame is right-handed (X cross Y = +Z). CadQuery, the URDF export, and the viewer all use right-handed frames; never author a mirrored (left-handed) layout.
 - Choose one object-intrinsic frame and stay consistent. Recommended: +Z = up, X = width (left-right), Y = depth (front-back). If the front face is at +Y, then as seen from the front, +X lies on the LEFT, so left-side features (e.g. a D-pad) must be authored at +X. Equivalently, "left = -X" only holds when the front faces -Y.
+- The FINAL URDF/world frame is Y-UP: +Y = up, +Z = front (toward the camera). The SDK auto-converts CadQuery z-up to this y-up frame inside mesh_from_cadquery / tessellate_cadquery, so author in CadQuery z-up and do NOT manually re-rotate the mesh vertices.
 - CadQuery named-plane normals (the negative ones are mirror traps):
     Workplane("XY")  normal +Z   (default front plane)
     Workplane("YZ")  normal +X

@@ -7,8 +7,11 @@ def build_scene_graph() -> dict:
     node = {"id", "type", "C", "D", "theta"}
       - type: wall | floor | door | window | object
       - C: OBB center [x, y, z] (meters), D: size [w, h, l] (non-negative), theta: Euler angles [rx, ry, rz] (degrees)
+      - OPTIONAL for object nodes: "mask": the SAM3 mask name this node was backprojected
+        from (e.g. "coffee carafe_1"). ``compile`` uses it to merge object nodes that
+        resolve to the same overlap-merged mask into ONE node, so always write it.
     edge = {"type", "src", "dst"}
-      - type: embedded_in | adjacent | abuts | overlaps_ok
+      - type: embedded_in | adjacent | supports | overlaps_ok
 
     Coordinate convention (must be followed, right-handed y-up):
       - +x right, +y up, +z toward the camera (viewer);

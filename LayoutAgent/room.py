@@ -2,47 +2,53 @@ from __future__ import annotations
 
 
 def build_scene_graph() -> dict:
-    """Reconstruct a street traffic scene (elevated view over a cobbled plaza).
-
-    Reference surface = the street/ground (top at y=0). +x right, +y up, +z toward
-    the camera. Objects are placed by their relative depth ordering and lateral
-    position observed in the image, with real-world metric dimensions.
-    """
-    floor = {"id": "street", "type": "floor", "C": [0.0, -0.05, 33.0],
-             "D": [46.0, 0.1, 70.0], "theta": [0, 0, 0]}
-
-    def car(id_, x, z, w, h, l, yaw=0.0):
-        return {"id": id_, "type": "object", "C": [x, h / 2.0, z],
-                "D": [w, h, l], "theta": [0, yaw, 0]}
-
+    """Living room: sofa, coffee table, dining table with 4 chairs, and a wall TV."""
     nodes = [
-        floor,
-        # foreground / near
-        car("suv_white", -6.0, 60.0, 1.95, 1.75, 4.4, -12.0),
-        car("car_silver", -0.5, 62.0, 1.70, 1.45, 3.8, 5.0),
-        car("taxi_car_right", 6.5, 58.0, 4.00, 1.45, 1.7, 0.0),
-        # midground
-        car("hatchback_green", -3.5, 52.0, 1.75, 1.55, 3.9, 8.0),
-        car("van_white", -0.2, 40.0, 2.00, 1.90, 4.9, -15.0),
-        car("taxi_car_left", -3.0, 42.0, 1.70, 1.45, 4.0, 0.0),
-        car("taxi_car_center", 3.0, 26.0, 1.70, 1.45, 4.0, -80.0),
-        # two-wheelers
-        car("scooter_left", -5.0, 47.0, 0.80, 1.20, 2.0, 0.0),
-        car("scooter_right", 1.0, 50.0, 0.80, 1.20, 2.0, 0.0),
-        # right foreground ornate lamppost
-        {"id": "lamppost", "type": "object", "C": [7.5, 3.0, 55.0],
-         "D": [0.6, 6.0, 0.6], "theta": [0, 0, 0]},
-        # background buses / pedestrians
-        {"id": "city_bus", "type": "object", "C": [4.5, 1.55, 8.0],
-         "D": [12.0, 3.1, 2.5], "theta": [0, 0, 0]},
-        {"id": "coach_bus", "type": "object", "C": [10.7, 1.75, 15.0],
-         "D": [12.0, 3.5, 2.5], "theta": [0, 0, 0]},
-        {"id": "pedestrians_group", "type": "object", "C": [-6.0, 0.85, 12.0],
-         "D": [3.0, 1.7, 1.5], "theta": [0, 0, 0]},
+        # Floor: top at y=0
+        {"id": "floor", "type": "floor", "C": [2.5, -0.05, 2.75], "D": [5.0, 0.1, 5.5], "theta": [0, 0, 0]},
+
+        # Enclosing walls (2.6 m tall, 0.16 m thick), +Z inward
+        {"id": "back_wall", "type": "wall", "C": [2.5, 1.3, 0.0], "D": [5.0, 2.6, 0.16], "theta": [0, 0, 0]},
+        {"id": "front_wall", "type": "wall", "C": [2.5, 1.3, 5.5], "D": [5.0, 2.6, 0.16], "theta": [0, 180, 0]},
+        {"id": "left_wall", "type": "wall", "C": [0.0, 1.3, 2.75], "D": [5.5, 2.6, 0.16], "theta": [0, 90, 0]},
+        {"id": "right_wall", "type": "wall", "C": [5.0, 1.3, 2.75], "D": [5.5, 2.6, 0.16], "theta": [0, -90, 0]},
+
+        # Wall-mounted TV on the front wall, facing the sofa (-z)
+        {"id": "tv", "type": "object", "C": [2.5, 1.5, 5.4], "D": [1.6, 0.9, 0.08], "theta": [0, 180, 0]},
+
+        # Sofa against the back wall, facing into the room (+z)
+        {"id": "sofa", "type": "object", "C": [2.5, 0.4, 0.6], "D": [2.2, 0.8, 0.9], "theta": [0, 0, 0]},
+
+        # Coffee table between sofa and TV
+        {"id": "coffee_table", "type": "object", "C": [2.5, 0.225, 1.9], "D": [1.2, 0.45, 0.7], "theta": [0, 0, 0]},
+
+        # Dining table
+        {"id": "dining_table", "type": "object", "C": [1.3, 0.375, 3.8], "D": [1.4, 0.75, 0.85], "theta": [0, 0, 0]},
+
+        # Four dining chairs around the dining table
+        {"id": "chair_0", "type": "object", "class": "dining chair", "C": [0.9, 0.45, 3.05], "D": [0.45, 0.9, 0.45], "theta": [0, 0, 0]},
+        {"id": "chair_1", "type": "object", "class": "dining chair", "C": [1.7, 0.45, 3.05], "D": [0.45, 0.9, 0.45], "theta": [0, 0, 0]},
+        {"id": "chair_2", "type": "object", "class": "dining chair", "C": [0.9, 0.45, 4.55], "D": [0.45, 0.9, 0.45], "theta": [0, 180, 0]},
+        {"id": "chair_3", "type": "object", "class": "dining chair", "C": [1.7, 0.45, 4.55], "D": [0.45, 0.9, 0.45], "theta": [0, 180, 0]},
     ]
 
-    grounded = [n["id"] for n in nodes if n["type"] == "object"]
-    edges = [{"type": "abuts", "src": oid, "dst": "street"} for oid in grounded]
-    edges.append({"type": "adjacent", "src": "taxi_car_center", "dst": "van_white"})
+    edges = [
+        # TV mounted in the front wall
+        {"type": "embedded_in", "src": "tv", "dst": "front_wall"},
+        {"type": "supports", "src": "tv", "dst": "front_wall"},
+
+        # Wall corners intentionally overlap
+        {"type": "overlaps_ok", "src": "back_wall", "dst": "left_wall"},
+        {"type": "overlaps_ok", "src": "back_wall", "dst": "right_wall"},
+        {"type": "overlaps_ok", "src": "front_wall", "dst": "left_wall"},
+        {"type": "overlaps_ok", "src": "front_wall", "dst": "right_wall"},
+
+        # Placement relations
+        {"type": "adjacent", "src": "sofa", "dst": "back_wall"},
+        {"type": "adjacent", "src": "chair_0", "dst": "dining_table"},
+        {"type": "adjacent", "src": "chair_1", "dst": "dining_table"},
+        {"type": "adjacent", "src": "chair_2", "dst": "dining_table"},
+        {"type": "adjacent", "src": "chair_3", "dst": "dining_table"},
+    ]
 
     return {"nodes": nodes, "edges": edges}

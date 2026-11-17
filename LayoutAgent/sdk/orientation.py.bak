@@ -1,0 +1,305 @@
+"""物体朝向分析（供 compile 工具把「正面朝向」反馈给 LLM 判断）。
+
+约定（见 prompts/docs.md）：**front = 局部 +Z 轴**（厚度/深度轴）。
+柜子的门面法线、椅子的坐向都沿局部 +Z。物体正立（roll=pitch=0）时，
+局部 +Z 在世界系的水平投影即物体的「正面朝向」。
+
+本模块不做「合理/不合理」的硬裁决，只负责：
+1. 计算每个 object 的正面朝向（世界系水平单位向量 + yaw）；
+2. 给出一个参照方向（椅子 → 最近桌子；柜子等贴墙家具 → 最近墙的内法线）；
+3. 计算朝向与参照的夹角，打上 aligned / perpendicular / reversed / no_reference 标记，
+   交给 LLM 判断是否合理；
+4. 校验墙的朝向：约定墙的局部 +Z 指向室内，用「哪侧物体更多」判定室内侧，
+   若某墙 +Z 朝外则提示翻转 yaw。
+
+墙的法线 = 局部 +Z（厚度轴）；约定 +Z 指向室内（内法线），贴墙家具的正面向内法线对齐。
+"""
+
+import numpy as np
+
+from .geometry import rotation_matrix
+
+# 名称关键词（node id 通常形如 "chair_0" / "柜子_0"，这里按 id 分类）
+CHAIR_KEYWORDS = ("chair", "stool", "seat", "sofa", "armchair", "couch", "bench",
+                  "椅", "凳", "沙发", "座")
+TABLE_KEYWORDS = ("table", "desk", "桌")
+# 贴墙家具：正面应朝室内（朝最近墙的内法线）
+WALL_FURNITURE_KEYWORDS = ("cabinet", "wardrobe", "cupboard", "shelf", "bookcase",
+                           "sideboard", "dresser", "bed", "柜", "架", "床", "衣柜", "书柜")
+
+VERDICT_CN = {
+    "aligned": "ok",
+    "perpendicular": "侧对（垂直）",
+    "reversed": "背对（反向）",
+    "no_reference": "无参照",
+}
+
+
+def _contains(name, keywords):
+    n = (name or "").lower()
+    return any(k in n for k in keywords)
+
+
+def _classify_category(node_id):
+    if _contains(node_id, CHAIR_KEYWORDS):
+        return "chair"
+    if _contains(node_id, WALL_FURNITURE_KEYWORDS):
+        return "wall_furniture"
+    return "other"
+
+
+def _valid_node(n):
+    c = n.get("C")
+    t = n.get("theta")
+    return (isinstance(c, (list, tuple)) and len(c) == 3 and
+            isinstance(t, (list, tuple)) and len(t) == 3)
+
+
+def front_dir(theta):
+    """局部 +Z 轴在世界系的水平单位方向（front）。"""
+    r = rotation_matrix(theta)
+    f = r[:, 2]  # 局部 +Z 轴列
+    h = np.array([f[0], 0.0, f[2]])
+    norm = np.linalg.norm(h)
+    if norm < 1e-9:
+        return np.array([0.0, 0.0, 1.0])
+    return h / norm
+
+
+def _horizontal_dir(from_xy, to_xy):
+    v = np.array([to_xy[0] - from_xy[0], 0.0, to_xy[1] - from_xy[1]], dtype=float)
+    norm = np.linalg.norm(v)
+    if norm < 1e-9:
+        return None
+    return v / norm
+
+
+def _room_center(nodes):
+    """房间中心（水平 xz）：优先用 floor 中心，否则所有节点中心均值。"""
+    floor = next((n for n in nodes if n.get("type") == "floor"), None)
+    if floor is not None and _valid_node(floor):
+        return (float(floor["C"][0]), float(floor["C"][2]))
+    xs = [n["C"][0] for n in nodes if _valid_node(n)]
+    zs = [n["C"][2] for n in nodes if _valid_node(n)]
+    if not xs:
+        return None
+    return (float(np.mean(xs)), float(np.mean(zs)))
+
+
+def _wall_adjacent_floor(wall, nodes):
+    """返回与墙相邻的地板：中心点离墙最近的那块地板（纯几何，不依赖 edges）。
+
+    墙的室内侧一定朝向它紧邻的地板。用欧氏距离找最近的 floor 中心即可，
+    比依赖 LLM 写的 supports/embedded_in 边更稳健（LLM 常漏边或写错边类型）。
+    """
+    floors = [n for n in nodes if n.get("type") == "floor" and _valid_node(n)]
+    if not floors:
+        return None
+    return min(floors, key=lambda f: (f["C"][0] - wall["C"][0]) ** 2 + (f["C"][2] - wall["C"][2]) ** 2)
+
+
+def _wall_indoor_sign(wall, nodes):
+    """判断墙的局部 +Z 是否指向室内：+1 朝内 / -1 朝外 / 0 无法判定。
+
+    室内侧 = 含「相邻地板」的一侧（墙的室内侧一定朝向它紧邻的地板）。
+    取最近的 floor 中心在 +Z 还是 -Z 侧；无 floor 时退回「哪侧物体更多」。
+    """
+    n = front_dir(wall["theta"])  # 墙局部 +Z = 法线
+    floor = _wall_adjacent_floor(wall, nodes)
+    if floor is not None:
+        s = (floor["C"][0] - wall["C"][0]) * n[0] + (floor["C"][2] - wall["C"][2]) * n[2]
+        if s > 1e-6:
+            return 1
+        if s < -1e-6:
+            return -1
+    pos = neg = 0
+    for other in nodes:
+        if other is wall or not _valid_node(other):
+            continue
+        s = (other["C"][0] - wall["C"][0]) * n[0] + (other["C"][2] - wall["C"][2]) * n[2]
+        if s > 1e-6:
+            pos += 1
+        elif s < -1e-6:
+            neg += 1
+    if pos == neg:
+        return 0
+    return 1 if pos > neg else -1
+
+
+def _nearest_wall_inward(walls, obj, nodes):
+    """距 object 最近的墙的内法线（按 object 到墙面的垂直距离）。无墙返回 None。
+
+    内法线用「哪侧物体更多」判定（_wall_indoor_sign），不盲目信任墙 +Z 的朝向；
+    这样即使墙的 +Z 写反了，家具参照方向也始终正确（墙 +Z 是否符合约定由 analyze_walls 另查）。
+    """
+    best = None
+    best_dist = None
+    for wall in walls:
+        n = front_dir(wall["theta"])  # 墙 +Z
+        if _wall_indoor_sign(wall, nodes) == -1:
+            n = -n  # +Z 朝外，翻转成室内方向
+        dvec = np.array([obj["C"][0] - wall["C"][0], 0.0, obj["C"][2] - wall["C"][2]])
+        dist = abs(float(np.dot(n, dvec)))  # 到过墙中心平面的垂直距离（与符号无关）
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best = n
+    return best
+
+
+def _front_yaw(front):
+    """水平单位向量 → yaw（度，[0, 360)）。front = [sin(yaw), 0, cos(yaw)]。"""
+    return float(np.degrees(np.arctan2(front[0], front[2]))) % 360.0
+
+
+def _dir_desc(v):
+    """水平单位向量 → 可读朝向（就近贴到 ±x / ±z）。"""
+    if abs(v[0]) >= abs(v[2]):
+        return "+x" if v[0] >= 0 else "-x"
+    return "+z" if v[2] >= 0 else "-z"
+
+
+def analyze_orientation(graph):
+    """分析所有 object 节点的正面朝向，返回观察列表。
+
+    每个观察：
+        id, category, front, front_yaw, ref_desc, ref, angle_deg, verdict
+    verdict ∈ {aligned, perpendicular, reversed, no_reference}。
+    """
+    nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
+    center = _room_center(nodes)
+    objects = [n for n in nodes if n.get("type") == "object" and _valid_node(n)]
+    walls = [n for n in nodes if n.get("type") == "wall" and _valid_node(n)]
+    tables = [n for n in objects if _contains(n["id"], TABLE_KEYWORDS)]
+
+    observations = []
+    for n in objects:
+        front = front_dir(n["theta"])
+        cat = _classify_category(n["id"])
+        ref = None
+        ref_desc = "无明确参照"
+
+        if cat == "chair":
+            # 朝最近的桌子；没有桌子则退回房间中心
+            nearest = None
+            best = None
+            for t in tables:
+                if t["id"] == n["id"]:
+                    continue
+                d = (n["C"][0] - t["C"][0]) ** 2 + (n["C"][2] - t["C"][2]) ** 2
+                if best is None or d < best:
+                    best = d
+                    nearest = t
+            if nearest is not None:
+                ref = _horizontal_dir((n["C"][0], n["C"][2]),
+                                      (nearest["C"][0], nearest["C"][2]))
+                ref_desc = f"朝桌子 {nearest['id']}"
+            elif center is not None:
+                ref = _horizontal_dir((n["C"][0], n["C"][2]), center)
+                ref_desc = "朝房间中心（无桌子）"
+        elif cat == "wall_furniture":
+            ref = _nearest_wall_inward(walls, n, nodes)
+            if ref is not None:
+                ref_desc = "朝最近墙的内法线（室内）"
+            elif center is not None:
+                ref = _horizontal_dir((n["C"][0], n["C"][2]), center)
+                ref_desc = "朝房间中心（无墙）"
+
+        angle = None
+        verdict = "no_reference"
+        if ref is not None:
+            dot = float(np.clip(np.dot(front, ref), -1.0, 1.0))
+            angle = float(np.degrees(np.arccos(dot)))
+            if angle < 45.0:
+                verdict = "aligned"
+            elif angle > 135.0:
+                verdict = "reversed"
+            else:
+                verdict = "perpendicular"
+
+        observations.append({
+            "id": n["id"],
+            "category": cat,
+            "front": [float(x) for x in front],
+            "front_yaw": _front_yaw(front),
+            "ref_desc": ref_desc,
+            "ref": ([float(x) for x in ref] if ref is not None else None),
+            "angle_deg": angle,
+            "verdict": verdict,
+        })
+    return observations
+
+
+def format_orientation_report(observations):
+    """把朝向观察转成给 LLM 的可读报告。空时返回空字符串。"""
+    if not observations:
+        return ""
+    lines = ["[orientation] 朝向检测（供你判断朝向是否合理）："]
+    for o in observations:
+        front = _dir_desc(o["front"])
+        if o["verdict"] == "no_reference":
+            lines.append(f"  - {o['id']}: 正面朝 {front}（{o['ref_desc']}，未做合理性别断）")
+        else:
+            lines.append(
+                f"  - {o['id']}: 正面朝 {front}，{o['ref_desc']}，"
+                f"偏差 {o['angle_deg']:.0f}° → {VERDICT_CN[o['verdict']]}"
+            )
+    return "\n".join(lines)
+
+
+def orientation_warnings(observations):
+    """把明显可疑的朝向（背对/侧对）转成 warning，供 compile 挂到 warnings 里。"""
+    out = []
+    for o in observations:
+        if o["verdict"] == "reversed":
+            out.append(f"orientation: {o['id']} 正面背对{o['ref_desc']}"
+                       f"（偏差 {o['angle_deg']:.0f}°），请确认朝向是否合理")
+        elif o["verdict"] == "perpendicular":
+            out.append(f"orientation: {o['id']} 正面侧对{o['ref_desc']}"
+                       f"（偏差 {o['angle_deg']:.0f}°），请确认朝向是否合理")
+    return out
+
+
+def analyze_walls(graph):
+    """校验每面墙的朝向（约定墙 +Z 朝室内），返回观察列表。
+
+    每个观察：id, front, indoor_sign (+1/-1/0), verdict ∈ {inward, outward, ambiguous}。
+    """
+    nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
+    walls = [n for n in nodes if n.get("type") == "wall" and _valid_node(n)]
+    out = []
+    for w in walls:
+        sign = _wall_indoor_sign(w, nodes)
+        verdict = "inward" if sign == 1 else ("outward" if sign == -1 else "ambiguous")
+        out.append({
+            "id": w["id"],
+            "front": [float(x) for x in front_dir(w["theta"])],
+            "indoor_sign": sign,
+            "verdict": verdict,
+        })
+    return out
+
+
+def wall_orientation_warnings(observations):
+    """把 +Z 朝外的墙转成 warning（约定应朝室内）。"""
+    out = []
+    for o in observations:
+        if o["verdict"] == "outward":
+            out.append(f"orientation: {o['id']} 的局部 +Z 指向室外（约定应朝室内），"
+                       f"请把 theta 的 yaw 加 180°")
+    return out
+
+
+def format_wall_report(observations):
+    """把墙朝向观察转成给 LLM 的可读报告。空时返回空字符串。"""
+    if not observations:
+        return ""
+    lines = ["[wall-orientation] 墙朝向检测（约定墙 +Z 朝室内）："]
+    for o in observations:
+        d = _dir_desc(o["front"])
+        if o["verdict"] == "inward":
+            lines.append(f"  - {o['id']}: +Z 朝 {d}（室内）ok")
+        elif o["verdict"] == "outward":
+            lines.append(f"  - {o['id']}: +Z 朝 {d}（室外）→ 请翻转 yaw")
+        else:
+            lines.append(f"  - {o['id']}: +Z 朝 {d}（无法判定室内侧）")
+    return "\n".join(lines)

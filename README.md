@@ -1,10 +1,13 @@
 # SEAL — Scene Engine for Articulated Layout
 
 **SEAL** is a hierarchical multi-agent system that reconstructs an indoor scene from a single
-image and turns it into a layout of *articulated* 3D assets. It is built on top of
-[ex-articraft](https://github.com/) (Arti-Agent) and pairs it with a perception/layout agent.
+image and turns it into a layout of *articulated* 3D assets.
 
-> **S**cene **E**ngine for **A**rticulated **L**ayout
+## Bug List
+
+1. Layout朝向 用PCA估计太不准了
+2. memory应该添加里程碑，避免重复调用工具
+3. image指导的场景重建太不准了：遮挡物体幻觉，朝向，大小等很难调
 
 ## Agents
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +11,7 @@ _SDK_ROUTER_VIRTUAL_PATH = "docs/sdk/references/quickstart.md"
 _MODEL_VIRTUAL_PATH = "room.py"
 _DEFAULT_PRELOAD_PATHS = (
     "docs/sdk/references/quickstart.md",
+    "docs/sdk/references/walls_and_floor.md",
     "docs/sdk/references/testing.md",
 )
 
@@ -138,22 +140,32 @@ def _load_router_document(repo_root: Path) -> _LoadedRouter:
     )
 
 
+def _derive_reference_suffix(filename: str) -> str:
+    """`NN_name.md` -> `references/name.md` (strip a leading NN_ ordinal prefix)."""
+    stem = Path(filename).stem
+    m = re.match(r"^\d+_(.+)$", stem)
+    if m:
+        stem = m.group(1)
+    return f"references/{stem}.md"
+
+
 def _build_sdk_reference_files(
     repo_root: Path,
     *,
     sdk_package: str,
 ) -> dict[str, VirtualWorkspaceFile]:
-    profile = get_sdk_profile(sdk_package)
-    files: dict[str, VirtualWorkspaceFile] = {}
+    """Auto-map every `sdk/_docs/common/*.md` to `docs/sdk/references/<name>.md`.
 
-    for rel_path in profile.docs_full:
-        rel_str = rel_path.as_posix()
-        virtual_suffix = _DOC_PATH_ALIASES.get(rel_str)
-        if virtual_suffix is None:
-            continue
-        files[f"docs/sdk/{virtual_suffix}"] = VirtualWorkspaceFile(
-            virtual_path=f"docs/sdk/{virtual_suffix}",
-            disk_path=repo_root / rel_path,
+    Discovery and alias derivation are automatic: add a file (e.g. `10_walls_and_floor.md`)
+    and it is exposed as `docs/sdk/references/walls_and_floor.md` with no manual edits.
+    """
+    files: dict[str, VirtualWorkspaceFile] = {}
+    docs_dir = repo_root / "sdk" / "_docs" / "common"
+    for disk in sorted(docs_dir.glob("*.md")):
+        virtual_path = f"docs/sdk/{_derive_reference_suffix(disk.name)}"
+        files[virtual_path] = VirtualWorkspaceFile(
+            virtual_path=virtual_path,
+            disk_path=disk,
         )
     return files
 
@@ -167,7 +179,3 @@ def _resolve_sdk_docs_relative_path(path: str) -> str:
     return f"docs/sdk/{normalized}"
 
 
-_DOC_PATH_ALIASES = {
-    "sdk/_docs/common/00_quickstart.md": "references/quickstart.md",
-    "sdk/_docs/common/80_testing.md": "references/testing.md",
-}

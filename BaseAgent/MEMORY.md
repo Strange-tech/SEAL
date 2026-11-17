@@ -1,7 +1,6 @@
-# Memory
+# MEMORY
 
-## Project conventions
-- LayoutAgent writes scene graphs (nodes/edges: floor, wall, door, object with C/D/theta) to `BaseAgent/output/layoutagent/`.
-- ArtiAgent writes per-object assets to `BaseAgent/output/artiagent/` and returns `{asset_dir, real_bbox}`.
-- Sub-agent tasks should be terse (<=8 words); long prompts bypass their internal structurer and degrade quality.
-- When the user attaches an image, always forward its exact path via `image_path`.
+## User preferences / conventions
+- The user frequently requests **layout-only** generations (no 3D assets) and often **without any attached image** — e.g. "generate a room layout with U shape", "L shape", "square room with sofa/TV/table/chairs/windows/doors/bicycle".
+  - In those cases: call `call_layout_agent` only, pass a short task (<=8 words), and **omit** `image_path` (text mode). Do not browse `input/` for an image.
+  - Layouts go to `BaseAgent/output/layoutagent/*.json`; report the output path plus a brief node/edge summary.

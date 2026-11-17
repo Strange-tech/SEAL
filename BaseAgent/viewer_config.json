@@ -1,0 +1,13 @@
+{
+  "layout": "output/layoutagent/generate-a-room-with-a-sofa-2-tables-4-chairs-an.json",
+  "arti": [
+    "output/artiagent/generate-a-room-with-a-sofa-2-tables-4-chairs-an__chair-0.json",
+    "output/artiagent/generate-a-room-with-a-sofa-2-tables-4-chairs-an__chair-1.json",
+    "output/artiagent/generate-a-room-with-a-sofa-2-tables-4-chairs-an__chair-2.json",
+    "output/artiagent/generate-a-room-with-a-sofa-2-tables-4-chairs-an__chair-3.json",
+    "output/artiagent/generate-a-room-with-a-sofa-2-tables-4-chairs-an__coffee-table.json",
+    "output/artiagent/generate-a-room-with-a-sofa-2-tables-4-chairs-an__dining-table.json",
+    "output/artiagent/generate-a-room-with-a-sofa-2-tables-4-chairs-an__sofa.json",
+    "output/artiagent/generate-a-room-with-a-sofa-2-tables-4-chairs-an__tv.json"
+  ]
+}
