@@ -164,6 +164,7 @@ def _tessellate_cadquery_shape(
     tolerance: float = 0.001,
     angular_tolerance: float = 0.1,
     unit_scale: float = 1.0,
+    z_up_to_y_up: bool = False,
 ) -> tuple[list[Vec3], list[tuple[int, int, int]]]:
     try:
         vertices_raw, triangles_raw = shape.tessellate(
@@ -175,9 +176,10 @@ def _tessellate_cadquery_shape(
 
     scale = float(unit_scale)
     vertices = [tuple(coord * scale for coord in _vector_xyz(vertex)) for vertex in vertices_raw]
-    # CadQuery is z-up (X width, Y depth with front at +Y, Z up); the SEAL world is
-    # y-up (X width, Y up, Z front). Convert (x, y, z) -> (-x, z, y).
-    vertices = [(-x, z, y) for (x, y, z) in vertices]
+    if z_up_to_y_up:
+        # CadQuery is z-up (X width, Y depth with front at +Y, Z up); the SEAL world
+        # is y-up (X width, Y up, Z front). Convert (x, y, z) -> (-x, z, y).
+        vertices = [(-x, z, y) for (x, y, z) in vertices]
     triangles = [(int(face[0]), int(face[1]), int(face[2])) for face in triangles_raw]
 
     if not vertices:
@@ -546,6 +548,7 @@ def export_cadquery_mesh(
             tolerance=tolerance,
             angular_tolerance=angular_tolerance,
             unit_scale=unit_scale,
+            z_up_to_y_up=True,
         )
         _write_obj(cache_mesh_path, vertices=vertices, triangles=triangles)
         local_aabb = _local_aabb_from_vertices(vertices)

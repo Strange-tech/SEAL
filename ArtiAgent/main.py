@@ -7,7 +7,11 @@ import subprocess
 import sys
 from pathlib import Path
 from provider import PROVIDERS, get_provider, image_path_to_data_url
-from tool_layer import ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool, BashTool, CompileModelTool, ProbeModelTool, RealBboxTool, FindExamplesTool, restore
+from basic_tools import ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool, BashTool, restore
+from tools.compile import CompileModelTool
+from tools.probe import ProbeModelTool
+from tools.real_bbox import RealBboxTool
+from tools.find_examples import FindExamplesTool
 from agent.bbox import compute_model_real_bbox
 from registry_layer import Registry
 from session_layer import new_session_file, load_session
@@ -58,7 +62,7 @@ def print_help() -> None:
 	lines.append("  --box <cx,cy,cz>,<w,h,l>[,<rx,ry,rz>]  Hard size constraint (front +z, up +y)")
 	lines.append("  --structure <mode>          When to expand the prompt: always | auto | never")
 	lines.append("                              default: 'auto' (expand prompts <= 8 words)")
-	lines.append("  --max-rounds <n>            Maximum agent rounds before stopping (default: 60)")
+	lines.append("  --max-rounds <n>            Maximum agent rounds before stopping (default: 100)")
 	lines.append("                              pass 'unlimited' (or 0) for no round limit")
 	lines.append("  --edit <record_id>          Edit (fork) an existing record with a new task")
 	lines.append("  --reason <mode>           With --edit: 'creation' (default) or 'fix_bugs'")

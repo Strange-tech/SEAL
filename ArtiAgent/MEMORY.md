@@ -1,5 +1,160 @@
 # Memory
 
+## Part nested in a cup/mesh AABB reads as overlap even on flush seat (verified 2026-11, wall clock)
+
+- A small part (movement housing cylinder) sitting on the interior back plate of a
+  hollow case mesh (cup) is reported by `real_overlap` with
+  `depth=(dx,dy,dz)=part's OWN full dims` (e.g. 0.06,0.06,0.0195 for a 0.06x0.06x0.0195
+  part) — because the part nests fully inside the case's *AABB* in x/y/z, so the AABB
+  min-depth = the part's whole extent, and `fcl.collide` returns true on the flush
+  face contact. This is a proxy artifact, not a real embedding. Fix with element-scoped
+  `ctx.allow_overlap(case, movement, elem_a="case_shell", elem_b="movement_body", reason=...)`
+  + an `expect_contact(...)` proof. `pair_report` confirms `collided:true, min_distance:0`.
+- Flush face contact where the parts DON'T nest in AABB (e.g. hand hub bottom coincident
+  with dial front, z-overlap extent exactly 0) is NOT flagged by the compiler (probe
+  `pair_report.collided` may still say true) — only actually-nested parts trip QC.
+- cq text recipe re-verified: `Workplane("XY").text(s, fontsize=, distance=,
+  combine=False, halign="center", valign="center").rotate((0,0,0),(0,1,1),180)` on the
+  XY plane makes glyph advance->world +x, up->world +y, extrude->world +z (front), so
+  it reads upright and unmirrored from the +z front. To ENGRAVE into a dial, place the
+  glyph base at the dial front minus relief depth and `dial.cut(glyph)`; the recessed
+  pockets ARE the readable digit (cutting a correctly-oriented glyph keeps it legible).
+  Numerals upright (no per-position rotation) is correct for a clock. Placing world
+  point (X,Y,Zf): translate the rotated glyph by cq `(-X, Zf, Y)` (mapping cq(x,y,z)->
+  world(-x,z,y)).
+
+## Hand-rolled y-up revolve + MeshGeometry API (verified 2026-02, glazed vase)
+
+- `sdk.MeshGeometry.add_vertex(x, y, z)` takes THREE FLOATS (not a tuple);
+  `add_face(a, b, c)` accepts only TRIANGLES (no quad arity) — split every quad
+  into `(a,b,c)` + `(a,c,d)`. Passing a tuple/4-index face fails at runtime.
+- Profile-in-(r,y) revolve directly in the y-up world frame (no cq, no axis
+  conversion): vertex `(r sinθ, y, r cosθ)`, θ = 2πj/segments; emit lateral
+  quads `(a_j, a_j2, b_j2, b_j)` for profile edge i->i+1 and normals come out
+  of the material everywhere (verified: outer wall +radial, rim +y, underside
+  -y, inner floor +y). r==0 points collapse to one apex vertex; the
+  apex/b>0 edge becomes triangle `(apex, b_j2, b_j)`, apex/a>0 edge becomes
+  `(a_j, a_j2, apex)`.
+- Closed CCW (r,y) loop for a hollow open vessel: underside centre -> foot ring
+  -> outer wall up -> over the rim -> inner wall down -> inner floor -> axis.
+  `geometry_connectivity_report` confirmed one connected shell, no islands, so
+  a single visual/part is a clean watertight vessel with real wall thickness.
+
+## cq.Workplane.text orientation onto world faces (verified 2026-11, hardcover book)
+
+- Confirmed again this build: `mesh_from_cadquery` maps cq->world as `world=(-cq_x, cq_z, cq_y)`
+  (det +1). Invert: to hit world/local point `(X,Y,Z)`, author at cq `(-X, Z, Y)`.
+- `cq.Workplane("XY").text(txt, fontsize=, distance=, combine=False, halign="center",
+  valign="center")` makes glyphs advancing +x, up +y, extruded +z. Rotate the whole WP to
+  orient it, then translate by `cq_target - bbox_center`:
+  - Text on a **+Z front face** (advance->world +x, up->world +y, normal out->world +z):
+    `.rotate((0,0,0),(0,1,1),180)`. Verified reads correctly via ASCII front-view raster.
+  - Text on a **-X spine face** (advance->world -y top-to-bottom, up->world +z,
+    normal out->world -x): `.rotate((0,0,0),(0,1,0),90)`. Verified not mirrored.
+- Self-check without a renderer: parse the shipped OBJ (local-frame coords for meshes),
+  take triangles in the *proud* slab (past the substrate face), project the two in-plane
+  axes and draw a barycentric ASCII fill — legible enough to read "AUTHOR NAME"/"PUBLISHER".
+- Union the extruded text into the board solid (`board.union(text.val())`) after sinking the
+  text ~0.5-0.7 mm into it; overlapping solids let OCC union merge so the part is one
+  connected mesh (no disconnected-geometry warning) and letters read as embossed relief.
+
+## Hand-rolled lathe revolve + stroke-font lettering (verified 2026-02, glass bottle)
+
+- Reliable hollow-vessel revolve with no cq: closed CCW `(r, y)` profile (material on
+  the left: up the outside, in over the rim, down the bore, out along the inner floor),
+  mapping `x = r*sin(th), z = r*cos(th)`, `theta = 2*pi*j/segments`, and lateral quads
+  emitted as `(a_j, a_j2, b_j2, b_j)` (a = profile point i, b = i+1) -> outward normals.
+  Points with `r == 0` collapse to one apex vertex and become triangles; skip segments
+  where both ends are on the axis. Verified by re-parsing the shipped OBJ and checking
+  the radius profile per y slice.
+- A per-theta radius modulation applied only where `r >= r_min` gives knurled/fluted
+  side walls on the same revolve (use segments = 4*flute_count).
+- Moulded lettering without cq: a stroke font (polylines per glyph) extruded as thin
+  rectangular prisms between a proud layer and an embedded layer, mapped onto the
+  curved surface by `theta = u / R` (front text) or `r = r_mid + v` (base annulus text).
+  Corner order must be CCW in the (u, v) plane; then outer face `(O0,O1,O2,O3)`, inner
+  `(I0,I3,I2,I1)`, sides `(O_{k+1}, O_k, I_k, I_{k+1})` all come out outward. Embed the
+  inner layer only ~0.9 mm so the radial overlap stays under the 5 mm overlap tol.
+  Stroke width must be < ~35% of the char cell or lowercase counters fill in solid —
+  render the shipped OBJ (barycentric triangle fill, ~40 lines of python) to check.
+- A screw cap that wraps the neck always trips `real_overlap`: the skirt descends past
+  the lip, so the two ELEMENT AABBs overlap ~16 mm in the axial axis while the solids
+  only share the seat plane. Coincident seating faces are still reported, so use
+  element-scoped `ctx.allow_overlap(bottle, cap, elem_a="bottle_body",
+  elem_b="cap_shell", reason=...)` + `expect_contact`/`expect_overlap` proofs.
+- No helical/screw articulation exists (only REVOLUTE/CONTINUOUS/PRISMATIC/FIXED/
+  FLOATING), and two joints on one child form an invalid loop, so a threaded cap must
+  be modelled as one joint: REVOLUTE about the neck axis (visible knurl spin) or
+  PRISMATIC (lift-off). Pick one and say which motion is represented.
+
+## CadQuery text lettering via mesh_from_cadquery (verified 2026-11, desk lamp)
+
+- `cq.Workplane("XY").text(s, fontsize, distance, combine=False)` then
+  `mesh_from_cadquery(shape, unique_name)` works and compiles clean. Font
+  default Arial is present.
+- Reading-direction fix under the (-x,z,y) OBJ mapping: a TOP-facing label
+  (normal -> world +Y) needs `.rotate((0,0,0),(0,0,1),180)` to cancel the x
+  flip; an UNDERSIDE label (must face world -Y) needs
+  `.rotate((0,0,0),(0,1,0),180)`.
+- Each line of text is SEPARATE letter islands, so a text strip must INTERSECT
+  its substrate (e.g. sink the base 0.3 mm into the plate) or the compiler
+  `disconnected_geometry` warning fires. Place flat labels on a truly flat
+  surface; a tilted rocker top makes flat text partially float -> warning.
+
+## Hinge-cover overlaps: allowance element names must match the compile report (verified 2026-11, desk lamp)
+
+- The overlap QC reports the WORST per part-pair element pair only; iterating
+  compile fixes one pair at a time. The cover cylinder vs the parent often
+  reports `parent_dome`/`parent_post` rather than the intended post, so read the
+  exact `elem_a`/`elem_b` names from the failure and mirror them in
+  `ctx.allow_overlap(link_of_a, link_of_b, elem_a=<a-elem>, elem_b=<b-elem>)`
+  (note link order: elem_a belongs to the FIRST link).
+- A tilted cone/shade's AABB is huge, so it "overlaps" an adjacent arm's AABB
+  massively even though the solids only touch at the pivot — this is a proxy
+  artifact; allow it scoped to `shade_cone`/`upper_tube` with an
+  `expect_contact` proof, don't reshape.
+- `fit_to_box` was NOT used; with the authored AABB bounded the compile is clean.
+
+## mesh_from_cadquery cq->world axis mapping is (-x, z, y) in this build (verified 2026-12, floor lamp)
+
+- Measured from world AABBs + the materialized OBJs: a cq shape authored at (x,y,z)
+  lands at world (-x, z, y). Determinant +1 (a 180 deg rotation about (0,1,1)), so
+  normals survive, but BOTH a y/z swap and an x flip bite:
+  - cq `z` is world UP (+y) as documented, but cq `+y` is world FRONT (+z) — put front
+    features (bosses, knobs, text plates) at cq **+y**, not -y.
+  - Anything x-asymmetric (pointer tabs, off-centre features) mirrors.
+- Engraved text that must read from the world front: `Workplane("XZ").text(...)` (reads
+  correctly from cq -Y, extrudes toward -Y), then `.rotate((0,0,0),(0,0,1),180)`, then
+  translate to the boss front at cq +y minus the engraving depth. The 180 deg rotation
+  cancels the OBJ x-flip, so the final world text reads left-to-right.
+- Diagnosing part placement: the exported OBJs under `.compile_tmp/assets/meshes/` hold
+  the mesh in the PART-local frame (visual origin NOT baked). world = part_frame +
+  visual_origin + obj coords. A quick painter's-algorithm front-view ASCII render with
+  those per-part baselines is enough to catch a whole-object misplacement.
+- Pitfall that cost a compile cycle: authoring geometry in the joint-local frame
+  (cq z = 0 at the joint origin) but ALSO passing that same joint origin as the visual
+  origin double-offsets the part by exactly one joint height (and inflates fit/unions).
+
+## AABB overlap proxy vs tapered / raked members (verified 2026-12, wooden chair)
+
+- Compiler `real_overlap` measures per-ELEMENT AABB intersection. A leg that tapers
+  over its whole length has an AABB fatter than its real section at stretcher height,
+  so a 2 mm tenon embed reported 5.4 mm and failed (tol 5 mm). Fix: keep the section
+  CONSTANT from the seat down past the stretcher and taper only below it (classic
+  leg) — then depth == the true embed.
+- Any part rotated about an axis inflates its AABB along the other two axes, so a
+  raked post vs anything spanning it reads as a big overlap even with a 1.5 mm joint.
+  Two remedies that both worked: (1) split the raked member into a vertical lower leg
+  + a raked upper post, both ending flush at the seat; (2) put the panel BETWEEN the
+  posts so the x-footprint overlap is only the 1 mm jointing embed.
+- Winding that gave outward normals for "stack CCW loops in local (u,v) along +w":
+  side quads `(a_j, a_j2, b_j2, b_j)` + `(a_j, b_j2, b_j)`, top cap fan
+  `(c, p_j, p_j2)`, bottom cap `(c, p_j2, p_j)`. Any to_world map with det +1
+  (e.g. `(u, w, -v)`) keeps them outward — verified via ASCII silhouette renders.
+- No numpy/renderer needed to eyeball: a ~60-line painter-sorted ASCII rasterizer over
+  `.compile_tmp/assets/meshes/*.obj` (project two axes, barycentric fill, ASCII chars
+  are ~1:2 so use sx = 2*sy) is enough to confirm silhouette/proportions.
+
 ## Hand-built upholstered slab (verified 2026-12, sofa)
 
 - Reliable soft-cushion mesh with NO cq/loft API: stack rounded-rect LOOPS at

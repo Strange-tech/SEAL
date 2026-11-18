@@ -1,213 +1,246 @@
 from __future__ import annotations
 
+import math
+
 import cadquery as cq
 
 from sdk import (
     ArticulatedObject,
     ArticulationType,
-    ExtrudeWithHolesGeometry,
-    MeshGeometry,
+    Box,
+    Cylinder,
+    MotionLimits,
     Origin,
     TestContext,
     TestReport,
-    mesh_from_geometry,
-    rounded_rect_profile,
-    tessellate_cadquery,
+    mesh_from_cadquery,
 )
 
 # ---------------------------------------------------------------------------
-# Three-seat sofa, modelled as a static assembly of FIXED joints.
-#
-# Convention: world is y-up, +z is front, +x is width.  The whole object is
-# authored so its geometric centre sits at the world origin (0,0,0).
-#
-# Design coordinates use floor = y 0 (easy to reason about); SHIFT_Y re-centres
-# the finished object on the origin.
+# Wall clock.  World frame is y-up / +z forward (toward viewer / clock face).
+# All dims in meters.
 # ---------------------------------------------------------------------------
 
-SHIFT_Y = -0.425  # floor(0)..back-top(0.85) -> -0.425..+0.425
+CASE_R = 0.150          # 300 mm case diameter
+CASE_FRONT = 0.014      # front rim plane (world z)
+CASE_BACK = -0.020      # back plane
+CAVITY_R = 0.132        # front recess radius (holds the dial)
+CAVITY_FLOOR = -0.0155  # interior back plate top
+
+DIAL_R = 0.130          # 260 mm dial
+DIAL_BACK = 0.004
+DIAL_FRONT = 0.010
+
+NUM_R = 0.100           # numeral ring radius
+NUM_FS = 0.016          # numeral font size
+
+MOV_R = 0.030
+MOV_BACK = CAVITY_FLOOR
+MOV_FRONT = DIAL_BACK
+
+# hand stacking planes (z centers), radius of hub
+HOUR_Z = 0.010
+HOUR_HUB_L = 0.0025
+HOUR_HUB_R = 0.009
+MIN_Z = HOUR_Z + HOUR_HUB_L          # 0.0125
+MIN_HUB_L = 0.0025
+MIN_HUB_R = 0.007
+SEC_Z = MIN_Z + MIN_HUB_L            # 0.0150
+SEC_HUB_L = 0.0020
+SEC_HUB_R = 0.005
 
 
-# ---------------------------------------------------------------------------
-# mesh helpers
-# ---------------------------------------------------------------------------
-def _yup(verts, faces, name):
-    """Convert a CadQuery (z-up) tessellation into a y-up sdk Mesh."""
-    v = [(x, z, -y) for (x, y, z) in verts]
-    return mesh_from_geometry(MeshGeometry(vertices=list(v), faces=list(faces)), name)
-
-
-def rounded_block(w, h, d, r, name, tol=0.0008):
-    """A box (w x h x d) with all 12 edges rounded -> upholstered read.
-
-    Built in cq (z-up) as box(w, d, h); after the y-up swap the world extents
-    are exactly (w, h, d), centred on the origin.
-    """
-    shape = cq.Workplane("XY").box(w, d, h).edges().fillet(r)
-    verts, faces = tessellate_cadquery(shape.val(), tolerance=tol)
-    return _yup(verts, faces, name)
-
-
-def tapered_leg(r_bottom, r_top, h, name, tol=0.0006):
-    """Truncated cone leg, base at y=0, top at y=h (widest at the top)."""
-    solid = cq.Solid.makeCone(r_bottom, r_top, h)
-    verts, faces = tessellate_cadquery(solid, tolerance=tol)
-    return _yup(verts, faces, name)
-
-
-PIP_E = 0.0025   # piping protrusion beyond the cushion side
-PIP_I = 0.004    # piping embed depth into the cushion body
-
-
-def piping_ring(w, d, rc, thick, name):
-    """Light piping / welt band around a cushion mid-seam (lies in x-z plane)."""
-    outer = rounded_rect_profile(w + 2 * PIP_E, d + 2 * PIP_E, rc + PIP_E)
-    inner = rounded_rect_profile(
-        max(w - 2 * PIP_I, 1e-3),
-        max(d - 2 * PIP_I, 1e-3),
-        max(rc - PIP_I, 0.002),
+def _case_shape():
+    body = (
+        cq.Workplane("ZX")
+        .circle(CASE_R)
+        .extrude(CASE_FRONT - CASE_BACK)
+        .translate((0, CASE_BACK, 0))
     )
-    geom = ExtrudeWithHolesGeometry(outer, [inner], thick, center=True)
-    v = [(x, z, -y) for (x, y, z) in geom.vertices]
-    return mesh_from_geometry(
-        MeshGeometry(vertices=list(v), faces=list(geom.faces)), name
+    cavity = (
+        cq.Workplane("ZX")
+        .circle(CAVITY_R)
+        .extrude(0.05)
+        .translate((0, CAVITY_FLOOR, 0))
     )
+    body = body.cut(cavity)
+    # wall-mount keyhole slot at the upper back
+    keyhole = cq.Workplane("XY").box(0.009, 0.030, 0.04).translate((0, 0.098, -0.020))
+    body = body.cut(keyhole)
+    return body.val()
 
 
-# ---------------------------------------------------------------------------
-# dimensions (design coords, floor = 0)
-# ---------------------------------------------------------------------------
-W_HALF = 1.18                    # total width 2.36
-Z_BACK, Z_FRONT = -0.46, 0.46    # depth 0.92
-
-BASE_Y0, BASE_Y1 = 0.10, 0.30    # upholstered base
-SEAT_TOP = 0.45                  # seat cushion top
-ARM_TOP = 0.65
-BACK_TOP = 0.85
-
-ARM_W = 0.19
-ARM_XC = 1.18 - ARM_W / 2        # +/-1.085
-
-BACK_T = 0.14                    # back frame thickness
-BACK_Z0 = Z_BACK                 # -0.46
-BACK_Z1 = Z_BACK + BACK_T        # -0.32
-
-CUSH_W = 0.64
-CUSH_XC = (-0.66, 0.0, 0.66)
-
-SEAT_D = 0.62
-SEAT_ZC = BACK_Z1 + SEAT_D / 2   # -0.01  (in front of the back frame)
-SEAT_Y0, SEAT_Y1 = BASE_Y1, SEAT_TOP
-
-BACKCUSH_T = 0.18
-BACKCUSH_Y0, BACKCUSH_Y1 = SEAT_TOP, 0.78
-BACKCUSH_ZC = BACK_Z1 + BACKCUSH_T / 2   # -0.23  (in front of the back frame)
-
-LEG_H = 0.10
-
-
-def _block(part, w, h, d, r, xc, yc, zc, mat, name):
-    part.visual(
-        rounded_block(w, h, d, r, name),
-        origin=Origin(xyz=(xc, yc + SHIFT_Y, zc)),
-        material=mat,
-        name=name,
+def _dial_shape():
+    disc = (
+        cq.Workplane("ZX")
+        .circle(DIAL_R)
+        .extrude(DIAL_FRONT - DIAL_BACK)
+        .translate((0, DIAL_BACK, 0))
     )
+    for i in range(1, 13):
+        theta = math.radians(30.0 * i)
+        x = NUM_R * math.sin(theta)
+        y = NUM_R * math.cos(theta)
+        glyph = (
+            cq.Workplane("XY")
+            .text(
+                str(i),
+                fontsize=NUM_FS,
+                distance=0.002,
+                combine=False,
+                halign="center",
+                valign="center",
+            )
+            .rotate((0, 0, 0), (0, 1, 1), 180)
+            .translate((-x, DIAL_FRONT - 0.001, y))
+        )
+        disc = disc.cut(glyph)
+    return disc.val()
 
 
 def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject(name="three_seat_sofa")
+    model = ArticulatedObject(name="wall_clock")
 
-    fabric = model.material(name="fabric", rgba=(0.71, 0.69, 0.63, 1.0))
-    piping = model.material(name="piping", rgba=(0.82, 0.80, 0.75, 1.0))
-    walnut = model.material(name="walnut", rgba=(0.21, 0.12, 0.07, 1.0))
+    wood = model.material("walnut", rgba=(0.34, 0.20, 0.11, 1.0))
+    cream = model.material("dial_cream", rgba=(0.93, 0.90, 0.82, 1.0))
+    black = model.material("hand_black", rgba=(0.09, 0.09, 0.10, 1.0))
+    grey = model.material("movement_grey", rgba=(0.20, 0.21, 0.22, 1.0))
 
-    # --- root: upholstered base frame -------------------------------------
-    frame = model.part("frame")
-    _block(
-        frame, 2.36, BASE_Y1 - BASE_Y0, 0.92, 0.03,
-        0.0, (BASE_Y0 + BASE_Y1) / 2, 0.0,
-        fabric, "base_frame",
+    # ---- root: case ----
+    case = model.part("case")
+    case.visual(
+        mesh_from_cadquery(_case_shape(), "case_shell"),
+        origin=Origin(),
+        material=wood,
+        name="case_shell",
     )
 
-    parts = {"frame": frame}
-
-    # --- back frame -------------------------------------------------------
-    back_frame = model.part("back_frame")
-    _block(
-        back_frame, 1.98, BACK_TOP - BASE_Y1, BACK_T, 0.04,
-        0.0, (BASE_Y1 + BACK_TOP) / 2, (BACK_Z0 + BACK_Z1) / 2,
-        fabric, "back_frame",
+    # ---- dial (fixed to case) ----
+    dial = model.part("dial")
+    dial.visual(
+        mesh_from_cadquery(_dial_shape(), "dial_face"),
+        origin=Origin(),
+        material=cream,
+        name="dial_face",
     )
-    parts["back_frame"] = back_frame
 
-    # --- arms -------------------------------------------------------------
-    for i, xc in enumerate((-ARM_XC, ARM_XC)):
-        arm = model.part(f"arm_{i}")
-        _block(
-            arm, ARM_W, ARM_TOP - BASE_Y1, 0.92, 0.05,
-            xc, (BASE_Y1 + ARM_TOP) / 2, 0.0,
-            fabric, f"arm_{i}",
-        )
-        parts[f"arm_{i}"] = arm
+    # ---- movement housing (hidden, fixed to case) ----
+    movement = model.part("movement")
+    movement.visual(
+        Cylinder(radius=MOV_R, length=MOV_FRONT - MOV_BACK),
+        origin=Origin(xyz=(0.0, 0.0, (MOV_FRONT + MOV_BACK) / 2.0)),
+        material=grey,
+        name="movement_body",
+    )
 
-    # --- legs -------------------------------------------------------------
-    leg_xs = (-1.02, 1.02)
-    leg_zs = (-0.40, 0.40)
-    n = 0
-    for lx in leg_xs:
-        for lz in leg_zs:
-            leg = model.part(f"leg_{n}")
-            leg.visual(
-                tapered_leg(0.018, 0.030, LEG_H, f"leg_{n}"),
-                origin=Origin(xyz=(lx, SHIFT_Y, lz)),
-                material=walnut,
-                name=f"leg_{n}",
-            )
-            parts[f"leg_{n}"] = leg
-            n += 1
+    # ---- hour hand ----
+    hour = model.part("hour_hand")
+    hz = HOUR_Z + HOUR_HUB_L / 2.0
+    hour.visual(
+        Cylinder(radius=HOUR_HUB_R, length=HOUR_HUB_L),
+        origin=Origin(xyz=(0.0, 0.0, hz)),
+        material=black,
+        name="hour_hub",
+    )
+    hour.visual(
+        Box((0.075, 0.010, 0.0015)),
+        origin=Origin(xyz=(0.0375, 0.0, hz)),
+        material=black,
+        name="hour_arm",
+    )
+    hour.visual(
+        Box((0.014, 0.010, 0.0015)),
+        origin=Origin(xyz=(-0.007, 0.0, hz)),
+        material=black,
+        name="hour_tail",
+    )
 
-    # --- seat cushions ----------------------------------------------------
-    for i, xc in enumerate(CUSH_XC):
-        c = model.part(f"seat_cushion_{i}")
-        yc = (SEAT_Y0 + SEAT_Y1) / 2
-        _block(
-            c, CUSH_W, SEAT_Y1 - SEAT_Y0, SEAT_D, 0.045,
-            xc, yc, SEAT_ZC, fabric, f"seat_cushion_{i}",
-        )
-        c.visual(
-            piping_ring(CUSH_W, SEAT_D, 0.045, 0.008, f"seat_piping_{i}"),
-            origin=Origin(xyz=(xc, yc + SHIFT_Y, SEAT_ZC)),
-            material=piping, name=f"seat_piping_{i}",
-        )
-        parts[f"seat_cushion_{i}"] = c
+    # ---- minute hand ----
+    minute = model.part("minute_hand")
+    mz = MIN_Z + MIN_HUB_L / 2.0
+    minute.visual(
+        Cylinder(radius=MIN_HUB_R, length=MIN_HUB_L),
+        origin=Origin(xyz=(0.0, 0.0, mz)),
+        material=black,
+        name="minute_hub",
+    )
+    minute.visual(
+        Box((0.105, 0.008, 0.0015)),
+        origin=Origin(xyz=(0.0525, 0.0, mz)),
+        material=black,
+        name="minute_arm",
+    )
+    minute.visual(
+        Box((0.022, 0.008, 0.0015)),
+        origin=Origin(xyz=(-0.011, 0.0, mz)),
+        material=black,
+        name="minute_tail",
+    )
 
-    # --- back cushions ----------------------------------------------------
-    for i, xc in enumerate(CUSH_XC):
-        c = model.part(f"back_cushion_{i}")
-        yc = (BACKCUSH_Y0 + BACKCUSH_Y1) / 2
-        _block(
-            c, CUSH_W, BACKCUSH_Y1 - BACKCUSH_Y0, BACKCUSH_T, 0.05,
-            xc, yc, BACKCUSH_ZC, fabric, f"back_cushion_{i}",
-        )
-        c.visual(
-            piping_ring(CUSH_W, BACKCUSH_T, 0.05, 0.008, f"back_piping_{i}"),
-            origin=Origin(xyz=(xc, yc + SHIFT_Y, BACKCUSH_ZC)),
-            material=piping, name=f"back_piping_{i}",
-        )
-        parts[f"back_cushion_{i}"] = c
+    # ---- second hand ----
+    second = model.part("second_hand")
+    sz = SEC_Z + SEC_HUB_L / 2.0
+    second.visual(
+        Cylinder(radius=SEC_HUB_R, length=SEC_HUB_L),
+        origin=Origin(xyz=(0.0, 0.0, sz)),
+        material=black,
+        name="second_hub",
+    )
+    second.visual(
+        Box((0.115, 0.004, 0.0008)),
+        origin=Origin(xyz=(0.0575, 0.0, sz)),
+        material=black,
+        name="second_arm",
+    )
+    second.visual(
+        Box((0.024, 0.004, 0.0008)),
+        origin=Origin(xyz=(-0.012, 0.0, sz)),
+        material=black,
+        name="second_tail",
+    )
 
-    # --- fixed joints (authored in world coords, identity child frames) ---
-    for name, part in parts.items():
-        if name == "frame":
-            continue
-        model.articulation(
-            f"frame_to_{name}",
-            ArticulationType.FIXED,
-            parent=frame,
-            child=part,
-            origin=Origin(),
-        )
+    # ---- articulations ----
+    model.articulation(
+        "case_to_dial",
+        ArticulationType.FIXED,
+        parent=case,
+        child=dial,
+        origin=Origin(),
+    )
+    model.articulation(
+        "case_to_movement",
+        ArticulationType.FIXED,
+        parent=case,
+        child=movement,
+        origin=Origin(),
+    )
+    model.articulation(
+        "case_to_hour_hand",
+        ArticulationType.CONTINUOUS,
+        parent=case,
+        child=hour,
+        origin=Origin(),
+        axis=(0.0, 0.0, 1.0),
+        motion_limits=MotionLimits(effort=0.1, velocity=1.0),
+    )
+    model.articulation(
+        "case_to_minute_hand",
+        ArticulationType.CONTINUOUS,
+        parent=case,
+        child=minute,
+        origin=Origin(),
+        axis=(0.0, 0.0, 1.0),
+        motion_limits=MotionLimits(effort=0.1, velocity=1.0),
+    )
+    model.articulation(
+        "case_to_second_hand",
+        ArticulationType.CONTINUOUS,
+        parent=case,
+        child=second,
+        origin=Origin(),
+        axis=(0.0, 0.0, 1.0),
+        motion_limits=MotionLimits(effort=0.05, velocity=2.0),
+    )
 
     return model
 
@@ -215,43 +248,68 @@ def build_object_model() -> ArticulatedObject:
 def run_tests() -> TestReport:
     ctx = TestContext(object_model)
 
-    try:
-        model = object_model
-    except NameError:
-        model = build_object_model()
+    case = object_model.get_part("case")
+    dial = object_model.get_part("dial")
+    movement = object_model.get_part("movement")
+    hour = object_model.get_part("hour_hand")
+    minute = object_model.get_part("minute_hand")
+    second = object_model.get_part("second_hand")
 
-    frame = model.get_part("frame")
+    hour_j = object_model.get_articulation("case_to_hour_hand")
+    minute_j = object_model.get_articulation("case_to_minute_hand")
+    second_j = object_model.get_articulation("case_to_second_hand")
 
-    # three seat modules + three back cushions
-    for i in range(3):
-        ctx.check(f"seat_cushion_{i} present", model.get_part(f"seat_cushion_{i}") is not None)
-        ctx.check(f"back_cushion_{i} present", model.get_part(f"back_cushion_{i}") is not None)
+    # The movement housing sits inside the case cavity and seats flush on the
+    # back plate; because it nests fully inside the case AABB the proxy overlap
+    # check reads the flush seat as a collision. It is intentional captured
+    # mounting, proven by the contact checks below.
+    ctx.allow_overlap(
+        case,
+        movement,
+        elem_a="case_shell",
+        elem_b="movement_body",
+        reason="Movement housing is captured inside the case cavity, seating "
+        "flush on the interior back plate; AABB nesting reports it as overlap.",
+    )
 
-    # every functional part is a direct fixed child of the root
-    for name in (
-        "back_frame", "arm_0", "arm_1", "leg_0", "leg_1", "leg_2", "leg_3",
-        "seat_cushion_0", "seat_cushion_1", "seat_cushion_2",
-        "back_cushion_0", "back_cushion_1", "back_cushion_2",
-    ):
-        joint = model.get_articulation(f"frame_to_{name}")
-        ctx.check(f"{name} fixed to root", joint.articulation_type == ArticulationType.FIXED)
+    # support / seating chain
+    ctx.expect_contact(hour, dial, elem_a="hour_hub", elem_b="dial_face",
+                       name="hour hub seats on dial face")
+    ctx.expect_contact(minute, hour, elem_a="minute_hub", elem_b="hour_hub",
+                       name="minute hub stacks on hour hub")
+    ctx.expect_contact(second, minute, elem_a="second_hub", elem_b="minute_hub",
+                       name="second hub stacks on minute hub")
+    ctx.expect_contact(dial, movement, elem_a="dial_face", elem_b="movement_body",
+                       name="dial supported by movement")
+    ctx.expect_contact(movement, case, name="movement mounted to case back")
 
-    # cushions seat onto the base and lean on the back frame
-    for i in range(3):
-        ctx.expect_contact(model.get_part(f"seat_cushion_{i}"), frame)
-        ctx.expect_contact(model.get_part(f"back_cushion_{i}"), model.get_part("back_frame"))
+    # dial centered within case rim
+    ctx.expect_within(dial, case, axes="xy", margin=0.0,
+                      name="dial fits inside case rim")
 
-    # arms stand on the base frame
-    ctx.expect_contact(model.get_part("arm_0"), frame)
-    ctx.expect_contact(model.get_part("arm_1"), frame)
-    # legs meet the underside of the base
-    for n in range(4):
-        ctx.expect_contact(model.get_part(f"leg_{n}"), frame)
+    # concentric coaxial shafts
+    for j in (hour_j, minute_j, second_j):
+        ctx.check(f"{j.name} is coaxial with +z",
+                  abs(j.axis[0]) < 1e-6 and abs(j.axis[1]) < 1e-6 and abs(j.axis[2] - 1.0) < 1e-6,
+                  details=str(j.axis))
 
-    # seat cushions rest just above the base top, back cushions above seats
-    ctx.expect_gap(
-        model.get_part("seat_cushion_1"), frame, axis="y",
-        max_gap=0.002, max_penetration=0.002,
+    # decisive motion check: rotating the minute hand sweeps its tip in the plane
+    def arm_center(part, elem):
+        bb = ctx.part_element_world_aabb(part, elem=elem)
+        if bb is None:
+            return None
+        lo, hi = bb
+        return tuple((lo[k] + hi[k]) / 2.0 for k in range(3))
+
+    with ctx.pose({minute_j: 0.0}):
+        rest = arm_center(minute, "minute_arm")
+    with ctx.pose({minute_j: math.pi / 2.0}):
+        turned = arm_center(minute, "minute_arm")
+    ctx.check(
+        "minute hand rotates about the dial axis",
+        rest is not None and turned is not None
+        and (turned[0] < rest[0] - 0.02) and (turned[1] > rest[1] + 0.02),
+        details=f"rest={rest} turned={turned}",
     )
 
     return ctx.report()

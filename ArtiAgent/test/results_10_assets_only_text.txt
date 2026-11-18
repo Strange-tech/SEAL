@@ -1,0 +1,41 @@
+local coordinate system check
+============================================================
+
+a wooden chair (rec_a-wooden-chair_20261117_154355_934121_e37e33d1)
+  center = [0.0000, 0.0006, -0.0003]  -> centered at origin
+  dims   = w 0.450  h 0.901  d 0.471  (x, y, z)
+
+a round coffee table (rec_a-round-coffee-table_20261117_154451_761552_50d5a639)
+  center = [0.0000, 0.2090, 0.0000]  -> offset from origin
+  dims   = w 0.901  h 0.422  d 0.901  (x, y, z)
+
+a floor lamp (rec_a-floor-lamp_20261117_155207_517769_cf068cc0)
+  center = [0.0000, 0.0000, 0.0000]  -> centered at origin
+  dims   = w 0.400  h 1.660  d 0.400  (x, y, z)
+
+a desk lamp (rec_a-desk-lamp_20261117_155743_955221_f81bbdf2)
+  center = [0.0000, 0.2570, 0.1353]  -> offset from origin
+  dims   = w 0.140  h 0.499  d 0.300  (x, y, z)
+
+a ceramic mug (rec_a-ceramic-mug_20261117_155941_662261_02e1f73b)
+  center = [0.0000, 0.0000, 0.0000]  -> centered at origin
+  dims   = w 0.120  h 0.096  d 0.086  (x, y, z)
+
+a glass bottle (rec_a-glass-bottle_20261117_160446_306520_a6a9ca1a)
+  center = [0.0000, 0.1100, 0.0002]  -> offset from origin
+  dims   = w 0.065  h 0.220  d 0.065  (x, y, z)
+
+a hardcover book (rec_a-hardcover-book_20261117_160843_668753_63be8c37)
+  center = [-0.0003, 0.0000, 0.0003]  -> centered at origin
+  dims   = w 0.161  h 0.240  d 0.030  (x, y, z)
+
+a chest of drawers (rec_a-chest-of-drawers_20261117_161043_395509_3c889f4d): AABB unavailable
+
+a flower vase (rec_a-flower-vase_20261117_161154_071415_c6f67a7c)
+  center = [0.0000, 0.0000, 0.0000]  -> centered at origin
+  dims   = w 0.120  h 0.250  d 0.120  (x, y, z)
+
+a wall clock (rec_a-wall-clock_20261117_161641_571143_42592fa3)
+  center = [0.0000, 0.0000, -0.0030]  -> centered at origin
+  dims   = w 0.300  h 0.300  d 0.034  (x, y, z)
+
