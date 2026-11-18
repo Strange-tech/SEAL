@@ -157,4 +157,4 @@ python main.py --edit <base_room_id> --task "add a floor lamp next to the sofa" 
 
 ### 演示视频
 
-[demo 视频：layout 编辑](../images/layout_edit.mp4)
+[demo 视频：layout 编辑](https://github.com/Strange-tech/SEAL/issues/1#issue-6468269948)
