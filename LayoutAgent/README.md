@@ -1,53 +1,160 @@
-# Layout-Agent
+# LayoutAgent
 
-Reconstruct an indoor layout from a single-frame indoor image: input an image, output `room.py`
-(scene-graph code: node = object OBB including walls/floors, edge = embedded / adjacent / supports / allowed overlap).
+LayoutAgent 是 SEAL 流水线里的「布局重建 agent」。给定一张室内图片（或纯文本描述），它驱动一个 LLM 反复编辑 `room.py`（用 SDK 编写场景图），编译校验，最终产出 `nodes`/`edges` 场景图，并可导出 `room.obj`（OBB boxes）或场景图 JSON。
 
-The design idea comes from ex-articraft (Arti-Agent): use an SDK to simplify complex geometry into objects/functions the LLM can easily understand and write, and pair it with a compile tool that returns concrete error feedback, forming a "write-compile-fix" loop.
+- 输入：室内图片（可选）+ 重建指令。
+- 输出：`room.py` 场景图（`nodes`/`edges`）、`room.obj`、`--emit-scene-graph` 的 JSON。
+- 坐标系约定：**y-up**，`+x 右、+y 上、+z 朝相机`；物体正立 `theta=[0, yaw, 0]`。
+- 感知：SAM3（开放集分割）、DA3（度量深度）。
 
-## Directory structure
+---
 
+## 一、main.py 参数说明
+
+用法：`python main.py [options]`
+
+| 参数 | 说明 |
+|---|---|
+| `--task <text>` | **必填**。重建指令（或关于房间的问题）。 |
+| `--image <path>` | 可选的输入图片（有图时走感知管线 SAM3/DA3）。 |
+| `--emit-scene-graph <path>` | 把最终场景图（`nodes`/`edges` JSON）导出到指定路径（相对 cwd 或绝对路径，父目录自动创建）。 |
+| `--state-save-path <dir>` | 把感知状态（image / DA3 重建 / SAM3 masks / boxes）保存到指定目录。 |
+| `--edit <room_id>` | **编辑已有房间**：fork 该 record 的 `room.py` + lineage 作为起点，配合 `--task` 描述本次编辑（增/删/移等）。 |
+| `-c <session_id>` | 恢复之前的 session（配合 `--task`）。 |
+| `--provider <name>` | LLM 提供方：`deepseek` \| `qwen`（默认 `$PROVIDER` 或 `deepseek`）。 |
+| `--model <id>` | 覆盖模型 id（优先级最高）。 |
+| `-restore <path>` | 从 `.trash/` 恢复备份文件。 |
+
+### 环境变量
+
+| 变量 | 说明 |
+|---|---|
+| `OPENAI_API_KEY` | DeepSeek 的 API key。 |
+| `DASHSCOPE_API_KEY` | Qwen 的 API key（未在 HELP 中列出，但 provider 使用）。 |
+| `PROVIDER` | 默认 provider（`deepseek`）。 |
+| `MODEL` | 模型名（DeepSeek 向后兼容）。 |
+| `OPENAI_BASE_URL` | API endpoint 覆盖（DeepSeek）。 |
+
+---
+
+## 二、目录 / 文件说明
+
+### 根目录
+
+| 路径 | 说明 |
+|---|---|
+| `main.py` | 入口：感知 + write-compile 循环、record 落库、`--emit-scene-graph` 导出。 |
+| `room.py` | **工作文件**，LLM 反复编辑的就是它。定义 `build_scene_graph()` 返回 `{"nodes": [...], "edges": [...]}`。 |
+| `schema.py` | 场景图数据契约（node/edge 类型、坐标系约定、`make_node`/`make_edge`）。 |
+| `room.obj` | 物化的 OBB boxes（`materialize` 导出）。 |
+| `scaffold.py` | `room.py` 的初始模板。 |
+| `plan.md` | 设计文档。 |
+| `viewer.py` | 布局 viewer：加载 `output/*.json`，左侧竖直列表切换渲染不同 layout 的 OBB box。 |
+| `provider.py` | LLM provider 配置。 |
+| `budget.py` / `compression.py` / `memory.py` / `session.py` / `skill.py` / `subagent.py` / `registry.py` / `core.py` | 框架支撑（预算、压缩、记忆、session、skill、subagent、工具注册、agent 核心）。 |
+
+### `agent/`
+
+| 路径 | 说明 |
+|---|---|
+| `persistence.py` | record 的 fork / 写入 / 物化（`fork_context`、`write_success_record`、`materialize_record`）。 |
+| `structurer.py` | 把 terse prompt 展开成 design brief。 |
+| `prompts/` | prompt 文件（`docs.md` SDK 参考、`system_prompt.md`、`designer_system_prompt_*.txt`）。 |
+
+### `tools/`
+
+| 路径 | 说明 |
+|---|---|
+| `compile.py` | **编译核心**：跑 `room.py` → `load_scene_graph` → 校验 → 诊断反馈（write-compile-fix 循环）。 |
+| `segmentation.py` | SAM3 开放集分割（惰性加载）。 |
+| `reconstruction.py` | Depth Anything 3（DA3）度量深度重建（惰性加载）。 |
+| `node_merge.py` | 按 mask 合并重复 object 节点。 |
+| `overlap_resolver.py` | overlap 处理。 |
+| `materialize.py` | 把场景图物化成 OBB boxes（导出 `room.obj`）。 |
+| `write_perception.py` | 保存感知状态。 |
+| `fileio.py` | 文件读写。 |
+
+### `sdk/`
+
+| 路径 | 说明 |
+|---|---|
+| `geometry.py` | OBB 几何（旋转、角点、点→OBB、SAT 相交）。 |
+| `validation.py` | 关系感知的碰撞/悬空检测（编译核心）。 |
+| `projection.py` | 深度 + 内参 + 外参 → 世界点云。 |
+| `fitting.py` | 正立 OBB 拟合、RANSAC 平面、地板/墙检测。 |
+| `manhattan.py` | East/North 正交基 + 朝向 snap。 |
+| `orientation.py` | 物体朝向分析（chair→桌、贴墙物体→墙内法线，用 edge 关联）。 |
+| `alignment.py` / `scene.py` | 相机对齐 / 场景工具。 |
+
+### 其它目录
+
+| 路径 | 说明 |
+|---|---|
+| `storage/` | record 存储层（records / revisions / layout / materialize）。 |
+| `data/` | 运行时数据（`data/records/`、`data/cache/record_materialization/`）。 |
+| `input/` | 输入图片。 |
+| `test/` | 测试脚本（如 `test_edit.sh` 增量编辑测试）。 |
+| `third_party/` | 第三方依赖。 |
+
+---
+
+
+
+---
+
+## 三、Scene Graph 设计
+
+场景图是 `room.py` 的最终产物，由两个顶层列表组成：`nodes` 和 `edges`。它是 LayoutAgent 的核心数据契约，定义在 `schema.py`。
+
+### node
+
+```python
+{
+    "id": "chair_0",            # 唯一字符串 id
+    "type": "object",            # wall | floor | door | window | object
+    "C": [1.0, 0.45, 0.7],       # 中心 center (x, y, z)，单位米
+    "D": [0.45, 0.9, 0.45],      # 尺寸 dims (w, h, l)，沿局部 x/y/z 轴
+    "theta": [0, 0, 0],          # 朝向 orientation (rx, ry, rz)，度，R = Rx@Ry@Rz
+    "class": "dining chair"      # 可选：规范类别，用于下游去重/实例化
+}
 ```
-layoutagent/
-├── plan.md                    # design spec
-├── schema.py                  # scene-graph data contract (node/edge types)
-├── agent.py                   # main loop: perception + write-compile loop
-├── sdk/                       # SDK: geometry / validation / backprojection / fitting / Manhattan regularization
-│   ├── geometry.py            #   OBB primitives: rotation, corners, points->OBB, SAT intersection
-│   ├── validation.py          #   relation-aware collision/floating detection (compile core)
-│   ├── projection.py          #   depth + intrinsics + extrinsics -> world point cloud
-│   ├── fitting.py             #   upright OBB fitting, RANSAC plane, floor/wall detection
-│   └── manhattan.py           #   East/North orthogonal basis + orientation snap
-├── tools/                     # perception + feedback tools (SAM3/DA3 lazy-loaded)
-│   ├── segmentation.py        #   SAM3 open-set segmentation
-│   ├── reconstruction.py      #   Depth Anything 3 reconstruction
-│   ├── compile.py             #   run room.py -> validate -> diagnose
-│   └── fileio.py              #   file read/write
-├── prompts/                   # prompt engineering
-│   ├── docs.md                #   SDK reference (must-read before the LLM writes room.py)
-│   └── system_prompt.md       #   system prompt
-└── tests/                     # all pure NumPy tests, no GPU needed
+
+- `D = [w, h, l]` 分别对应局部 x/y/z 轴；直立物体的 `h` 是高度。
+- 室内物体正立：`theta = [0, yaw, 0]`（只有 yaw 有意义，rx=rz=0）。
+- `class`（可选）用于标识「同一类物体」，下游据此把相同实例只生成一次，再实例化到各 node 自己的 center/theta。
+
+### edge
+
+```python
+{"type": "supports", "src": "cup", "dst": "table"}
 ```
 
-## Quick start
+| 类型 | 语义 | 方向 |
+|---|---|---|
+| `embedded_in` | 门/窗嵌在墙里（OBB 相交，合法） | src 嵌在 dst |
+| `adjacent` | 水平相邻，允许小间隙 | src 邻近 dst |
+| `supports` | 一个物体支撑另一个（杯在桌上） | **src 被 dst 支撑**（src → dst） |
+| `overlaps_ok` | OBB 相交但合法（椅子塞在桌下） | — |
+
+### 坐标系与朝向
+
+- 世界系：右手系、y-up —— `+x 右、+y 上、+z 朝相机`；背墙在 z=0。
+- 物体内禀正面 = 局部 `+Z`：`theta=[0,0,0]` 时正面朝 +Z，yaw 旋转它（yaw=90° → +X，180° → -Z，-90° → -X）。
+- **挂墙物体（电视/窗户/门/镜子/画）正面朝室内**：其 `theta` 应等于所在墙的 `theta`。
+
+## 四、编辑功能（`--edit`）与演示
+
+`--edit <room_id>` 会 fork 一个已有 record 的 `room.py` + lineage 作为起点，然后用 `--task` 描述本次编辑（增/删/移/交换等）。这样可以对同一个房间做**增量式**编辑：每次编辑基于上一次的结果，形成一条逐步演化的链。
+
+示例（见 `test/test_edit.sh`）：
 
 ```bash
-# run all tests (no GPU / no SAM3/DA3 needed)
-python layoutagent/tests/run_all.py
-
-# verify the package imports (should succeed even without GPU dependencies)
-python -c "import layoutagent; print(layoutagent.__version__)"
+python main.py --edit <base_room_id> --task "add a floor lamp next to the sofa" \
+    --emit-scene-graph "output/edit_add_floor_lamp.json"
 ```
 
-The perception tools (SAM3 / DA3) need a CUDA GPU and are wrapped with lazy loading: when not installed,
-`import layoutagent` still works, and it only errors when an inference method is actually called.
+然后在 `viewer.py` 里切换对比每个编辑结果（第一个是未编辑前的 base layout）。
 
-## Data contract (summary)
+### 演示视频
 
-- node: `{"id", "type", "C": [x,y,z], "D": [w,h,l], "theta": [rx,ry,rz]}`,
-  `type ∈ {wall, floor, door, window, object}`.
-- edge: `{"type", "src", "dst"}`,
-  `type ∈ {embedded_in, adjacent, supports, overlaps_ok}`.
-- The world frame is y-up; rotation `R = Rx·Ry·Rz` (degrees); indoor objects are upright `theta=[0, yaw, 0]`.
-
-The full contract, validation rules, and exemptions are in `prompts/docs.md`.
+[demo 视频：layout 编辑](../images/layout_edit.mp4)
