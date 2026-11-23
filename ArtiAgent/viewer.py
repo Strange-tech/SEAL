@@ -380,7 +380,7 @@ INDEX_HTML = """<!doctype html>
   var controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
 
-  var TYPE_COLORS = { wall: 0x8899aa, floor: 0x559966, door: 0xaa7744, window: 0x6699cc, object: 0xcc9966 };
+  var TYPE_COLORS = { wall: 0x8899aa, floor: 0x559966, door: 0xaa7744, window: 0x6699cc, object: 0xcc9966, box: 0x6688cc };
   var DEG = Math.PI / 180;
 
   var sceneRoot = new THREE.Group(); scene.add(sceneRoot);
@@ -509,7 +509,7 @@ INDEX_HTML = """<!doctype html>
       Object.keys(linkGroups).forEach(function (n) { if (!jointByChild[n]) placed.add(linkGroups[n]); });
     }
     urdfGroup.add(placed);
-    var model = { name: urdf.name, linkGroups: linkGroups, joints: joints, jointByChild: jointByChild };
+    var model = { name: urdf.name, linkGroups: linkGroups, joints: joints, jointByChild: jointByChild, placed: placed };
     urdfModels.push(model);
     joints.forEach(function (j) { setJointTransform(model, j, clampAngle(j)); });
 
@@ -609,19 +609,53 @@ INDEX_HTML = """<!doctype html>
     currentIdx = i;
   }
 
+  function renderAll() {
+    clearUrdf();
+    var pending = [];
+    allUrdfs.forEach(function (u) { pending.push(buildURDF(u)); });
+    Promise.all(pending).then(function () {
+      var legend = document.getElementById('legend');
+      var parts = ['<span class="x">X</span> right &nbsp;<span class="y">Y</span> up &nbsp;<span class="z">Z</span> front'];
+      parts.push(allUrdfs.length + ' objects');
+      legend.innerHTML = parts.join(' &nbsp;&middot;&nbsp; ');
+      frameAll();
+    });
+  }
+
+  function focusObject(i) {
+    if (i < 0 || i >= urdfModels.length) return;
+    var m = urdfModels[i];
+    if (!m.placed) return;
+    var box = new THREE.Box3().setFromObject(m.placed);
+    if (box.isEmpty()) return;
+    var c = box.getCenter(new THREE.Vector3());
+    var s = box.getSize(new THREE.Vector3());
+    var maxDim = Math.max(s.x, s.y, s.z) || 1;
+    camera.position.set(c.x + maxDim * 0.6, c.y + maxDim * 0.5, c.z + maxDim * 1.3);
+    controls.target.copy(c);
+    controls.update();
+    var btns = document.querySelectorAll('.obj-btn');
+    for (var k = 0; k < btns.length; k++) btns[k].classList.toggle('active', k === i);
+    currentIdx = i;
+  }
+
   fetch('/scene.json').then(function (r) { return r.json(); }).then(function (data) {
     if (data.error) { fail(data.error); return; }
+    var hasLayout = !!(data.layout && data.layout.nodes && data.layout.nodes.length);
+    if (data.layout) { buildLayout(data.layout.nodes || []); layoutEdges = data.layout.edges || []; }
     allUrdfs = data.urdfs || [];
     var list = document.getElementById('sidebar-list');
     allUrdfs.forEach(function (u, i) {
       var btn = document.createElement('button');
       btn.className = 'obj-btn';
       btn.textContent = u.result_name;
-      btn.addEventListener('click', function () { renderObject(i); });
+      btn.addEventListener('click', function () {
+        if (hasLayout) focusObject(i); else renderObject(i);
+      });
       list.appendChild(btn);
     });
     if (allUrdfs.length) {
-      renderObject(0);
+      if (hasLayout) renderAll(); else renderObject(0);
     } else {
       fail('No assets to render.');
     }
@@ -740,8 +774,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             self._send(200, "text/html; charset=utf-8", INDEX_HTML.encode("utf-8"))
         elif path == "/scene.json":
-            arti_paths = sorted(ASSET_JSON_DIR.glob("*.json"))
-            scene, mesh_map = build_scene(None, arti_paths)
+            if Handler.config_path is not None or Handler.cli_layout or Handler.cli_arti:
+                layout_path, arti_paths, config_error = _resolve_targets(
+                    Handler.config_path, Handler.cli_layout, Handler.cli_arti)
+                scene, mesh_map = build_scene(layout_path, arti_paths)
+                if config_error:
+                    scene["error"] = (scene.get("error") + "; " if scene.get("error") else "") + config_error
+            else:
+                arti_paths = sorted(ASSET_JSON_DIR.glob("*.json"))
+                scene, mesh_map = build_scene(None, arti_paths)
             with Handler._lock:
                 Handler.mesh_map = mesh_map
             self._send(200, "application/json; charset=utf-8", json.dumps(scene).encode("utf-8"))

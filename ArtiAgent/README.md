@@ -19,7 +19,7 @@ ArtiAgent 是 SEAL 流水线里的"单物体铰接资产生成器"。给定一�
 | `--model <id>` | 覆盖模型 id（优先级最高：`--model` > `{NAME}_MODEL` > `MODEL` > 默认）。 |
 | `--image <path>` | 可选的参考图片（需 provider 支持 vision）。有图时 structurer 会看图扩展 prompt。 |
 | `--emit-result <path>` | 把结果 JSON 写到指定路径。当前结构为 `{"asset_dir", "center", "dims", "rpy"}`：`asset_dir` 指向 record 目录，`center`/`rpy` 是放置变换（来自 `--box`，无 box 时为 `[0,0,0]`），`dims` 是实测自然尺寸。 |
-| `--box <cx,cy,cz>,<w,h,l>[,<rx,ry,rz>]` | 布局给的参考 box（**软约束**，不再强制缩放）。`center`/`dims`/`rpy`，其中 **rpy 单位是弧度**。物体按自然尺寸建模，编译时 harness 会报告与参考 box 的差值，由 LLM 判断尺寸是否可接受。 |
+| `--box <cx,cy,cz>,<w,h,l>[,<rx,ry,rz>]` | 布局给的参考 box（**软约束**，不强制缩放）。`center`/`dims`/`rpy`，**rpy 单位是弧度**。物体按自然尺寸建模；编译时 harness 会报告 `<box_delta>`（尺寸/位置差）+ `<orientation_check>`（轴排列分析，检测是否被放倒/转错轴），由 LLM 判断尺寸与姿态是否可接受。 |
 | `--structure <mode>` | 何时把 prompt 展开成 design brief：`always` \| `auto` \| `never`。默认 `auto`（≤8 词的 prompt 才展开）。 |
 | `--max-rounds <n>` | 最大 agent 轮数，默认 100。传 `unlimited`（或 `0`）表示不限制。 |
 | `--edit <record_id>` | 基于已有 record 进行编辑（fork 其 model.py 作为起点）。 |
@@ -52,10 +52,10 @@ ArtiAgent 是 SEAL 流水线里的"单物体铰接资产生成器"。给定一�
 | `model.py` | **工作文件**，LLM 反复编辑的就是它。约定定义 `build_object_model()` 并赋给模块级 `object_model`。 |
 | `scaffold.py` | `model.py` 的初始模板（`ensure_model_scaffold` 用它重置）。 |
 | `basic_tools.py` | 基础工具：`read_file` / `write_file` / `edit_file` / `list_files` / `bash`，以及共享常量与辅助函数（`WORK_DIR`、`TRASH_DIR`、`MODEL_FILENAME`、`tail`、`backup_if_exists`、`restore` 等）。 |
-| `tools/` | 领域工具，每个工具一个文件：`compile.py`（`CompileModelTool`，含 `--box` 差值反馈）、`probe.py`（`ProbeModelTool`）、`real_bbox.py`（`RealBboxTool`）、`find_examples.py`（`FindExamplesTool`）。 |
+| `tools/` | 领域工具，每个工具一个文件：`compile.py`（`CompileModelTool`，含 `--box` 的 `<box_delta>` 差值 + `<orientation_check>` 朝向检测）、`probe.py`（`ProbeModelTool`）、`real_bbox.py`（`RealBboxTool`）、`find_examples.py`（`FindExamplesTool`）。 |
 | `provider.py` | LLM provider 配置（deepseek / qwen 的默认模型、base_url、api_key_env）。 |
 | `materialize_cli.py` | 把某个 record 的 model.py 重新编译物化成 `model.urdf` + meshes，可导出到指定目录。 |
-| `viewer.py` | 本地 asset viewer（从 BaseAgent 的 room_viewer 复制改造）：加载 `assets/10_assets_only_text/*.json`，左侧竖直列表点击渲染单个物体，带 XOZ 网格 + 坐标轴。 |
+| `viewer.py` | 本地 asset viewer（从 BaseAgent 的 room_viewer 复制改造）：默认加载 `assets/10_assets_only_text/*.json` 逐个渲染；用 `--config` 可同时渲染布局 box（layout）+ 多个 asset（用于 `--box` 结果检查），带网格 + 坐标轴。 |
 | `budget.py` / `compression.py` / `memory.py` / `session_layer.py` / `subagent_layer.py` / `skill_layer.py` / `registry_layer.py` | 框架支撑：预算、上下文压缩、记忆、session、subagent、skill、工具注册。 |
 | `smoke_compile.py` | 编译冒烟测试。 |
 | `README.md` | 本文件。 |
@@ -65,7 +65,7 @@ ArtiAgent 是 SEAL 流水线里的"单物体铰接资产生成器"。给定一�
 | 路径 | 说明 |
 |---|---|
 | `compiler.py` | 编译核心：`compile_urdf_report_maybe_timeout`（执行 model.py → 建 object_model → 导出 URDF XML，带超时保护）。 |
-| `bbox.py` | `compute_model_real_bbox`（joint-range 真实包围盒）。 |
+| `bbox.py` | `compute_model_real_bbox`（joint-range swept 包围盒）与 `compute_zero_pose_bbox`（零姿态静态包围盒，供 `--box` 朝向检测用）。 |
 | `persistence.py` | record 的写入/物化（`write_success_record`、`materialize_record`）。 |
 | `structurer.py` | 把 terse prompt 展开成 design brief。 |
 | `feedback.py` | 编译结果格式化（`render_compile_signals`）。 |
@@ -100,14 +100,14 @@ model.py 作者使用的公开 SDK。
 | `data/` | 运行时数据（gitignore）：`data/records/`（record）、`data/cache/record_materialization/`（物化的 model.urdf + meshes）。 |
 | `assets/` | 生成的资产导出（如 `assets/10_assets_only_text/`）。 |
 | `input/` | 输入参考图片。 |
-| `test/` | 测试脚本（如 `10_assets_only_text.sh` 批量生成、`postprocess_10.py` 后处理）。 |
+| `test/` | 测试脚本：`10_assets_only_text.sh`（无 box 批量生成）、`10_assets_with_box.py`（带 `--box` 批量生成 + 生成 viewer 配置）、`postprocess_10.py`（后处理）、`make_asset_jsons.py`（写 asset 结果 JSON）。 |
 | `articraft/` | Articraft 相关（`values.py`，record 来源/值）。 |
 
 ---
 
 ## 三、viewer 使用示例
 
-ArtiAgent 自带一个本地资产查看器 `viewer.py`（从 BaseAgent 的 room_viewer 复制改造，只加载 `assets/10_assets_only_text/*.json`）。
+ArtiAgent 自带一个本地资产查看器 `viewer.py`（从 BaseAgent 的 room_viewer 复制改造）。默认只加载 `assets/10_assets_only_text/*.json`；带 `--config` 时能同时渲染布局 box 与多个 asset。
 
 ### 启动
 
@@ -133,4 +133,25 @@ python3 viewer.py --port 8766
 ### 截图示例
 
 ![viewer example](../images/example.png)
+
+---
+
+## 四、带 `--box` 的批量生成与查看
+
+`test/10_assets_with_box.py` 复用 `10_assets_only_text.sh` 的 10 个物体，给每个物体一个 `--box` 约束批量生成，并把结果写成 viewer 可读的 `scene.json`（layout=10 个 box + arti=10 个 asset）。
+
+```bash
+# 用 layout conda 环境跑（main.py 依赖 cadquery / manifold3d）
+cd /mnt/sda/johnli/SEAL/ArtiAgent
+~/miniconda3/envs/layout/bin/python test/10_assets_with_box.py                      # 只生成 + 写 scene.json
+~/miniconda3/envs/layout/bin/python test/10_assets_with_box.py --view --port 8770   # 生成完直接起 viewer
+```
+
+（`--box` 的尺寸/位置硬编码在脚本顶部的 `ITEMS` 里，可自行编辑；`--dry-run` 只打印命令不调 LLM。）
+
+启动后浏览器打开 `http://<服务器IP>:8770/`，即可看到 10 个半透明蓝色 box + 10 个摆放在各自 box 内的 asset，检查生成物是否贴合参考 box、有没有被放倒。生成过程中 `compile_model` 会输出 `<orientation_check>`（轴排列分析），用于在生成时检测并纠正被放倒/转错轴的姿态。
+
+### 截图示例
+
+![with box](../images/with_box.png)
 

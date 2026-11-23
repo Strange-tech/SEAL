@@ -177,7 +177,7 @@ def _box_constraint_text(box):
 	return chr(10).join([
 		"<box_constraint>",
 		f"Reference box from the layout (--box): target dims (w x h x l) = ({w} x {h} x {l}) centred at ({cx}, {cy}, {cz}), orientation rpy = ({rx}, {ry}, {rz}).",
-		"This is a SOFT reference, not a hard fit. Author the object at its natural, believable size with its geometric centre at the world origin (0,0,0), in CadQuery z-up (the SDK auto-converts to the y-up world frame: front +z, up +y). Do NOT apply any position offset or rotation; do NOT call fit_to_box.",
+		"This is a SOFT reference, not a hard fit. Author the object at its natural size with its geometric centre at the world origin (0,0,0), in the canonical y-up world frame (x = width, y = up/height, z = front/depth). The Box/Cylinder/Origin primitives are already in this y-up frame; only mesh_from_cadquery takes a CadQuery z-up shape and the SDK converts it to y-up automatically. Do NOT apply any offset or rotation; do NOT call fit_to_box.",
 		"The scene placement (translation to ({cx}, {cy}, {cz}) and rotation rpy) is applied separately by the renderer - the model only supplies the canonical geometry.",
 		"After each compile, the harness reports the delta between this reference box and the object's actual box (position/scale/rotation). Analyze whether the actual box is acceptable; if not, adjust the model and recompile.",
 		"</box_constraint>",
