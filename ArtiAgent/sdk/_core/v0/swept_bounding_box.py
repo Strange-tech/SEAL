@@ -1,6 +1,6 @@
-"""Real (joint-range) bounding box of an articulated object.
+"""Swept (joint-range) bounding box of an articulated object.
 
-The *real* bounding box is the axis-aligned box (in the root / world frame) that
+The *swept* bounding box is the axis-aligned box (in the root / world frame) that
 contains the object's geometry over the FULL range of every joint's motion, not
 just the current pose. A layout engine cares about this swept volume: a drawer
 that slides open, a lid that lifts, or a wheel that spins all sweep a region

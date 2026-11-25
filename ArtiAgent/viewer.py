@@ -6,7 +6,7 @@ Renders two things in one browser scene:
 * **layout** — a LayoutAgent scene-graph JSON (``nodes``/``edges``) from
   ``BaseAgent/output/layoutagent/``. Each node is drawn as a semi-transparent OBB
   box; hovering it shows its local XYZ axes (X red / Y green / Z blue) and id.
-* **arti** — an ArtiAgent result JSON (``asset_dir`` + ``real_bbox``) from
+* **arti** — an ArtiAgent result JSON (``asset_dir`` + ``swept_bbox``) from
   ``BaseAgent/output/artiagent/``. The viewer resolves the record's materialized
   ``model.urdf`` + ``assets/meshes/*.obj`` and renders the articulated object,
   with a toggle to animate each joint across its ``<limit lower/upper>`` range.
@@ -244,7 +244,7 @@ def build_scene(layout_path, arti_paths):
     """Build the combined render payload for one layout + N arti results.
 
     ``arti_paths`` is a list of ArtiAgent result JSON paths (each holds
-    ``asset_dir`` + ``real_bbox``). Returns ``(scene, mesh_map)`` where
+    ``asset_dir`` + ``swept_bbox``). Returns ``(scene, mesh_map)`` where
     ``scene["urdfs"]`` is a list of parsed URDFs with *namespaced* mesh keys
     (``u<i>_m<k>``) and ``mesh_map`` maps each key to an absolute mesh file path.
     """
@@ -286,9 +286,9 @@ def build_scene(layout_path, arti_paths):
             urdf["center"] = center
             urdf["rpy"] = rpy
             if arti.get("dims") is not None:
-                urdf["real_bbox"] = {"center": center, "dims": arti.get("dims")}
+                urdf["swept_bbox"] = {"center": center, "dims": arti.get("dims")}
             else:
-                urdf["real_bbox"] = arti.get("real_bbox")
+                urdf["swept_bbox"] = arti.get("swept_bbox")
             urdf["result_name"] = Path(arti_path).stem
             urdfs.append(urdf)
         except Exception as e:  # noqa: BLE001
@@ -380,7 +380,7 @@ INDEX_HTML = """<!doctype html>
   var controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
 
-  var TYPE_COLORS = { wall: 0x8899aa, floor: 0x559966, door: 0xaa7744, window: 0x6699cc, object: 0xcc9966, box: 0x6688cc };
+  var TYPE_COLORS = { wall: 0x8899aa, floor: 0x559966, door: 0xaa7744, window: 0x6699cc, object: 0xcc9966, box: 0x6688cc, swept_bbox: 0xff5566, rest_bbox: 0x55cc88 };
   var DEG = Math.PI / 180;
 
   var sceneRoot = new THREE.Group(); scene.add(sceneRoot);
@@ -598,8 +598,8 @@ INDEX_HTML = """<!doctype html>
       var legend = document.getElementById('legend');
       var parts = ['<span class="x">X</span> right &nbsp;<span class="y">Y</span> up &nbsp;<span class="z">Z</span> front'];
       parts.push(u.name + ' &middot; ' + Object.keys(u.links).length + ' links / ' + (u.joints || []).length + ' joints');
-      if (u.real_bbox) {
-        parts.push('dims: ' + u.real_bbox.dims.map(function (d) { return d.toFixed(3); }).join(' x ') + ' m');
+      if (u.swept_bbox) {
+        parts.push('dims: ' + u.swept_bbox.dims.map(function (d) { return d.toFixed(3); }).join(' x ') + ' m');
       }
       legend.innerHTML = parts.join(' &nbsp;&middot;&nbsp; ');
       frameAll();

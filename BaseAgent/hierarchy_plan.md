@@ -6,9 +6,9 @@ BaseAgent 需要是一个一直运行的进程，用户输入一句话，他要�
 
 最重要的设计：
 1. Dual-Agent hierarchical Framework: LayoutAgent和ArtiAgent分层解耦，分别负责场景的结构和物体精细几何
-2. Bidirectional Iterative Optimization Loop: 资产反馈布局，让布局能够自适应铰链物体的形变（真实包围盒），消除碰撞与悬空
+2. Bidirectional Iterative Optimization Loop: 资产反馈布局，让布局能够自适应铰链物体的形变（扫掠包围盒），消除碰撞与悬空
 3. Cross-Object Mutual Adaptation: 解决多个物体几何相互干扰问题，比如添加窗户会影响墙壁，墙壁需要被挖空
 
 实现途径：
-1. ArtiAgent实现一个tool（真实包围盒），他返回铰链物体所有关节的活动范围所占据的包围盒，LayoutAgent拿到这个包围盒之后，再重新compile布局
+1. ArtiAgent实现一个tool（扫掠包围盒），他返回铰链物体所有关节的活动范围所占据的包围盒，LayoutAgent拿到这个包围盒之后，再重新compile布局
 2. 新增的嵌入关系会影响两个物体本身的几何，比如墙壁被窗户嵌入，那么墙壁需要调用cad sdk（差集）挖去这一部分

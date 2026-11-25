@@ -72,7 +72,7 @@ class CallArtiAgentTool:
                 "or reconstruct_scene for that. Pass the object description (do not truncate it). Forward the object's reference image — a mask image "
                 "(the object isolated by its SAM3 mask, transparent background) is ideal so ArtiAgent cannot "
                 "re-segment neighbours — via image_path. Optionally pass box to constrain the object's "
-                "scale and position. Returns {ok, output, result} where result is {asset_dir, real_bbox} "
+                "scale and position. Returns {ok, output, result} where result is {asset_dir, swept_bbox} "
                 "written to BaseAgent/output/artiagent/. Trust the returned result — do not re-verify or "
                 "re-render it."
             ),

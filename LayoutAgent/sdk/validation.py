@@ -48,6 +48,19 @@ def _iou(a, b):
     return inter / union if union > 1e-9 else 0.0
 
 
+def _collision_box(node):
+    """Return the OBB tuple (C, D, theta) to use for collision.
+
+    Prefers the node's ``swept_bbox`` (the swept joint-range AABB, already in world
+    coords) so articulated objects reserve their full motion envelope; otherwise
+    falls back to the rest box (C/D/theta) for static objects.
+    """
+    rb = node.get("swept_bbox")
+    if isinstance(rb, dict) and rb.get("center") and rb.get("dims"):
+        return (rb["center"], rb["dims"], node.get("theta", [0.0, 0.0, 0.0]))
+    return (node.get("C"), node.get("D"), node.get("theta", [0.0, 0.0, 0.0]))
+
+
 def validate_scene_graph(graph, floor_tolerance=0.05, supports_tolerance=0.02):
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
@@ -112,7 +125,7 @@ def validate_scene_graph(graph, floor_tolerance=0.05, supports_tolerance=0.02):
                 continue
             if frozenset((a["id"], b["id"])) in exempt:
                 continue
-            if obbs_overlap((a["C"], a["D"], a["theta"]), (b["C"], b["D"], b["theta"])):
+            if obbs_overlap(_collision_box(a), _collision_box(b)):
                 failures.append(f"collision: {a['id']} vs {b['id']}")
 
     # ---- floating check (wall/object must sit on the floor; door/window embedded in walls are skipped) ----

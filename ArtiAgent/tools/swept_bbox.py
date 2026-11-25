@@ -1,14 +1,14 @@
 import json
 from pathlib import Path
-from agent.bbox import compute_model_real_bbox
+from agent.bbox import compute_model_swept_bbox
 from basic_tools import WORK_DIR
 
-class RealBboxTool:
+class SweptBboxTool:
 	def definition(self):
 		return {
-			"name": "real_bbox",
+			"name": "swept_bbox",
 			"description": (
-				"Compute the real (joint-range) bounding box of the current model.py: the "
+				"Compute the swept (joint-range) bounding box of the current model.py: the "
 				"axis-aligned box that contains every part's geometry across the full range of "
 				"each joint's motion (the swept volume). Returns {center:[cx,cy,cz], dims:[w,h,l]} "
 				"in the y-up / +z-forward world frame. Use it to verify the object fits the "
@@ -31,13 +31,13 @@ class RealBboxTool:
 		if samples is not None:
 			samples = int(samples)
 		try:
-			center, dims = compute_model_real_bbox(
+			center, dims = compute_model_swept_bbox(
 				Path(WORK_DIR) / "model.py",
 				asset_root=Path(WORK_DIR) / ".bbox_tmp",
 				samples=samples,
 			)
 		except Exception as e:
-			return "Error: real_bbox failed: " + str(e)
+			return "Error: swept_bbox failed: " + str(e)
 		return json.dumps(
 			{"center": [round(float(v), 6) for v in center], "dims": [round(float(v), 6) for v in dims]},
 			indent=2,

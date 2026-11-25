@@ -1,5 +1,48 @@
 # Memory
 
+## Floor lamp / coaxial-rod trap (verified 2026-12, Articraft floor lamp)
+
+- A downlight cone shade (socket at top apex, bulb hanging down) CANNOT be
+  supported by a central neck/stem up the axis: the rod passes through the bulb
+  glass and trips `real_overlap`. Attach from the SIDE: a yoke arm from the pole
+  top to a trunnion bearing cup on the shade's back lower rim (hinge origin at
+  that rim point, axis +x), bulb/socket at the shade top held by a spider ring.
+- A lathe cone shell author in (radius, z) builds coaxially at x=z=0; to put the
+  part frame at an off-axis hinge, add the axis offset as a z translation AFTER
+  the z->y map: (x, z+y_off, -y+z_off).
+- Engraving letters with counters (O) or several glyphs via cq `.cut(text)` then
+  `mesh_from_cadquery` can leave several raw disconnected tessellation
+  components -> non-blocking `disconnected_geometry` warning only.
+- A downlight bulb nested inside the shade-shell AABB needs a part-level
+  `allow_overlap(shade, bulb)` (nested-in-AABB proxy) + `expect_overlap(...,axes="xz")`.
+
+## `tessellate_cadquery` returns RAW cq coords; `mesh_from_cadquery` converts (verified 2026-11, hardcover book)
+
+- `sdk.tessellate_cadquery(shape)` calls the internal tessellator WITHOUT
+  `z_up_to_y_up=True`, so it hands back cadquery coordinates untouched. Convert
+  yourself with `world = (-x, z, y)` (det +1, winding preserved), or you will ship
+  a mesh rotated 90 deg relative to your intent. `mesh_from_cadquery` /
+  `export_cadquery_mesh` DO pass `z_up_to_y_up=True`, hence the (-x, z, y) map
+  reported in earlier sessions.
+- Working recipe (used for correct engraved text on arbitrary faces of a cq solid):
+  author every cq box at `box(sx, sz, sy).translate((-cx, cz, cy))` so that after
+  the (-x,z,y) conversion the part-local point is exactly `(cx, cy, cz)` in the
+  y-up frame. For text, build `cq.Plane(origin=(-ox, oz, oy),
+  xDir=(-dx, dz, dy), normal=(-nx, nz, ny))` from part-local world-style vectors,
+  then `cq.Workplane(plane).text(s, fontsize=, distance=, combine=False,
+  halign="center", valign="center")`, and `board.cut(glyphs)` — a cut keeps the
+  letters part of one solid, so no disconnected-island warning.
+- Left/right check that works: for a face with outward normal n, text reads
+  correctly when `xDir` (advance) and `u = n x xDir` (glyph up). Verified: front
+  cover is cq +y face (n=(0,1,0), d=(-1,0,0)); back cover is cq -y face
+  (n=(0,-1,0), d=(1,0,0)); spine (outer face world -x) is cq +x face with
+  d=(0,0,-1) so the title runs down the spine.
+- Cheap verification with no renderer: filter the shipped OBJ's triangles lying in
+  the engraving-floor plane (`abs(coord - z_floor) < 1e-5`) and barycentric-fill
+  them projected onto the two in-plane axes. That reproduces the letter glyphs
+  exactly, and reading the ASCII left-to-right with the advance axis mapped to +u
+  proves both legibility and non-mirroring.
+
 ## Part nested in a cup/mesh AABB reads as overlap even on flush seat (verified 2026-11, wall clock)
 
 - A small part (movement housing cylinder) sitting on the interior back plate of a
@@ -274,12 +317,12 @@
 
 - Budget it up front: `fit_to_box` sizes the REST union, so
   `rest_dim + joint_travel` must stay under the box on every axis. A twist-lock
-  (revolute) on a round part is the worst offender: `real_bbox` rotates the part's
+  (revolute) on a round part is the worst offender: `swept_bbox` rotates the part's
   AABB, so a diameter-D ring twisted by θ reports `D(cosθ+sinθ)` — a 0.35 rad twist
   turned a 0.131 m hopper into 0.169 m and blew a 0.15 m box. Keep ω-lock twists
   ≤ ~0.2 rad and/or shrink the round part; a prismatic tray slide must also fit in
   the depth slack (shorten the spout/fork overhang to buy it).
-- Box-check loop that works: `compile_model` → `real_bbox` → adjust authored
+- Box-check loop that works: `compile_model` → `swept_bbox` → adjust authored
   overhangs/limits → recompile. The scale is usually set by width or depth, leaving
   1–2 cm of height slack for a lid lift.
 
@@ -292,14 +335,14 @@
   ASCII, or PNG via `zlib` + hand-built chunks) is enough to sanity-check silhouette,
   part placement and front/side proportions.
 
-## real_bbox inflates rotating circular parts by √2 (verified 2026-12, Articraft)
+## swept_bbox inflates rotating circular parts by √2 (verified 2026-12, Articraft)
 
-- `real_bbox` sweeps the joint range but computes each pose's AABB by rotating the
+- `swept_bbox` sweeps the joint range but computes each pose's AABB by rotating the
   part's local AABB (a box) and taking the outer bounds. A round lid that spins about
   its own vertical axis therefore reports width = diameter·√2 (at the 45° sample),
   even though its true footprint is unchanged. With `fit_to_box` sizing the rest union
   to fit the box exactly, any visible revolute spin on a full-diameter round part makes
-  `real_bbox` exceed the box limit.
+  `swept_bbox` exceed the box limit.
 - Fix: use a PRISMATIC lift for lids that must open (real "lift off after unscrewing"),
   which grows the swept box only by the translation amount. Keep the lift small enough
   that rest_height + lift ≤ box height (here 0.132 + 0.015 = 0.147 ≤ 0.15).
@@ -311,14 +354,14 @@
 ## Fitting a swaying/organic plant into a tight box (verified 2026-12, potted plant)
 
 - `fit_to_box` always saturates at least one dimension, so a plant whose leaves sway
-  (revolute at the crown) will exceed the box in `real_bbox` unless the SATURATED
+  (revolute at the crown) will exceed the box in `swept_bbox` unless the SATURATED
   dimension is the one the sway axis leaves invariant. A rotation about the x axis
   preserves all x coordinates: make the plant's WIDTH the limiting dimension (squash
   the foliage front-to-back via `MeshGeometry.scale(sx, 1.0, sz)`), then height and
   depth keep real slack and the swept box still fits.
 - Practical recipe: author foliage freely, then post-scale every foliage mesh
   (stem + each leaf, same factors so bases stay welded) by ~(1.0, 1.0, 0.72). Check
-  with `real_bbox`: target swept dims comfortably inside the box in every axis.
+  with `swept_bbox`: target swept dims comfortably inside the box in every axis.
 - Broad ruffled leaves read well as a hand-built thin shell: parametric grid
   (t along the blade, v across), width `W*sin(pi*t**0.8)**0.75` (min-clamped so the
   tip stays closed), cup `-0.34*v^2*w`, edge ripple `0.42*v^6*w*sin(...)`; build top
@@ -386,7 +429,7 @@
   This is an unavoidable proxy artifact for legitimately nested parts — fix with element-
   scoped `ctx.allow_overlap(body, child, elem_a="housing", elem_b="<child elem>", reason=...)`
   plus an `expect_contact` proof; do not distort geometry to chase it.
-- `fit_to_box` fits the REST pose to the given box; `real_bbox` (swept) is legitimately
+- `fit_to_box` fits the REST pose to the given box; `swept_bbox` (swept) is legitimately
   larger once joints move (a lid that lifts above a body that already fills full height).
 
 ## Workspace / path conventions (verified 2026-11)
@@ -405,7 +448,7 @@
 - `call_arti_agent(image_path=...)` resolves relative paths against ArtiAgent's cwd, so
   images that live in `/mnt/sda/johnli/LayoutAgent/input/` must be passed absolute, or
   omitted. Reference images attached by the user in chat are NOT on disk.
-- ArtiAgent's emitted result JSON often has `real_bbox: null` and `asset_dir` pointing at
+- ArtiAgent's emitted result JSON often has `swept_bbox: null` and `asset_dir` pointing at
   `data/records/<record_id>`. The actual buildable artifacts (model.urdf + per-visual
   OBJ meshes under `assets/meshes/`) live in
   `data/cache/record_materialization/<record_id>/`. Read `record.json` for the id.
@@ -567,7 +610,7 @@
   ~0 even when the box centre is far from the world origin, and `expect_*`
   thresholds stay in authored units. Verify with a probe: union AABB centre must
   equal the target centre to ~1e-9.
-- `real_bbox` inflates *any* rotation by rotating the part AABB, so a jointed
+- `swept_bbox` inflates *any* rotation by rotating the part AABB, so a jointed
   object whose rest pose exactly saturates the tight axis (here 6 cm height) will
   always report swept dims > box. Check the true swept volume with a small
   pure-python script over the materialized OBJs (rotate vertices exactly) before
@@ -597,3 +640,22 @@
   a base overlaps on "xz" (footprint), not "xy". `part_world_position(head)`
   never moves when the joint origin *is* the head frame — use
   `part_element_world_aabb(head, elem=...)` centres for pose checks.
+
+## Two verified Articraft gotchas (2026-11, desk lamp)
+
+- `tube_from_spline_points(...)` returns a descriptor that `Part.visual` REJECTS
+  ("unsupported geometry type: WirePolylineGeometry"); wrap it with
+  `mesh_from_geometry(geom, "name")` before adding it.
+- The non-blocking `disconnected_geometry` island warning can be a REAL defect,
+  not just a proxy artifact: it flagged the four visuals at one end of an arm
+  because the arm bar stopped 23 mm short of its own hinge fork (the fork was
+  attached to nothing). Verify with `pair_report(visual(part,"bar"),
+  visual(part,"fork_plate"))` — `min_distance` > 0 with `gap_y` positive means a
+  genuine gap; extend the member until it overlaps. Plates/knobs that only touch
+  coincident faces can also read as separate islands, so check the numbers.
+- `_MB.revolve` + CCW (r,h) profile gives outward normals for a hollow cup with
+  the mouth at max h (verified on a lamp shade). To aim the mouth along a
+  downward direction `s`, build the cup opening at +Y then apply a manual
+  `Rx(theta)` (theta = pi - tilt) to the vertex list before `mesh_from_geometry`.
+  Watch frames: a part's visuals live in the PART-local frame, so a shade placed
+  with a desk-frame anchor point lands a whole arm-length too high.

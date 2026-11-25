@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from agent.compiler import compile_urdf_report_maybe_timeout
 from agent.feedback import render_compile_signals, compile_signal_bundle_from_exception
-from agent.bbox import compute_model_real_bbox, compute_zero_pose_bbox
+from agent.bbox import compute_model_swept_bbox, compute_rest_bbox
 from basic_tools import WORK_DIR
 
 class CompileModelTool:
@@ -48,7 +48,7 @@ class CompileModelTool:
 
 	def _box_delta_text(self):
 		try:
-			center, dims = compute_model_real_bbox(
+			center, dims = compute_model_swept_bbox(
 				Path(WORK_DIR) / "model.py",
 				asset_root=Path(WORK_DIR) / ".bbox_tmp",
 			)
@@ -74,7 +74,7 @@ class CompileModelTool:
 
 	def _orientation_check_text(self):
 		try:
-			_, zd = compute_zero_pose_bbox(
+			_, zd = compute_rest_bbox(
 				Path(WORK_DIR) / "model.py",
 				asset_root=Path(WORK_DIR) / ".bbox_tmp",
 			)

@@ -6,7 +6,7 @@ Renders two things in one browser scene:
 * **layout** — a LayoutAgent scene-graph JSON (``nodes``/``edges``) from
   ``BaseAgent/output/layoutagent/``. Each node is drawn as a semi-transparent OBB
   box; hovering it shows its local XYZ axes (X red / Y green / Z blue) and id.
-* **arti** — an ArtiAgent result JSON (``asset_dir`` + ``real_bbox``) from
+* **arti** — an ArtiAgent result JSON (``asset_dir`` + ``swept_bbox``) from
   ``BaseAgent/output/artiagent/``. The viewer resolves the record's materialized
   ``model.urdf`` + ``assets/meshes/*.obj`` and renders the articulated object,
   with a toggle to animate each joint across its ``<limit lower/upper>`` range.
@@ -239,13 +239,14 @@ def _resolve(path, bases):
     return (bases[0] / p).resolve()
 
 
-def build_scene(layout_path, arti_paths):
+def build_scene(layout_path, arti_paths, placements=None):
     """Build the combined render payload for one layout + N arti results.
 
     ``arti_paths`` is a list of ArtiAgent result JSON paths (each holds
-    ``asset_dir`` + ``real_bbox``). Returns ``(scene, mesh_map)`` where
-    ``scene["urdfs"]`` is a list of parsed URDFs with *namespaced* mesh keys
-    (``u<i>_m<k>``) and ``mesh_map`` maps each key to an absolute mesh file path.
+    ``asset_dir`` + ``swept_bbox``). ``placements`` (optional) is a list of
+    ``{asset_dir, center, theta(deg), swept_bbox}`` entries from the feedback loop's
+    ``_placements.json`` — the final per-node instantiation (places each URDF at its
+    refined pose). Returns ``(scene, mesh_map)``.
     """
     scene = {}
     errors = []
@@ -285,13 +286,40 @@ def build_scene(layout_path, arti_paths):
             urdf["center"] = center
             urdf["rpy"] = rpy
             if arti.get("dims") is not None:
-                urdf["real_bbox"] = {"center": center, "dims": arti.get("dims")}
+                urdf["swept_bbox"] = {"center": center, "dims": arti.get("dims")}
             else:
-                urdf["real_bbox"] = arti.get("real_bbox")
+                urdf["swept_bbox"] = arti.get("swept_bbox")
             urdf["result_name"] = Path(arti_path).stem
             urdfs.append(urdf)
         except Exception as e:  # noqa: BLE001
             errors.append("arti[%d]: %s" % (i, e))
+
+    # placements (final instantiation): each entry = {asset_dir, center, theta(deg), swept_bbox}
+    for i, p in enumerate(placements or []):
+        try:
+            urdf_path = resolve_urdf(p.get("asset_dir"))
+            if not urdf_path or not urdf_path.is_file():
+                errors.append("placement[%d] (%s): no model.urdf for asset_dir=%r"
+                              % (i, p.get("node_id"), p.get("asset_dir")))
+                continue
+            urdf = parse_urdf(urdf_path)
+            prefix = "u%d_" % (len(arti_paths or []) + i)
+            remap = {}
+            for m in urdf["meshes"]:
+                remap[m["key"]] = prefix + m["key"]
+                mesh_map[remap[m["key"]]] = str((urdf_path.parent / m["file"]).resolve())
+            for ln in urdf["links"].values():
+                for vis in ln["visuals"]:
+                    if "mesh_key" in vis:
+                        vis["mesh_key"] = remap[vis["mesh_key"]]
+            urdf["meshes"] = [{"key": remap[m["key"]], "file": m["file"]} for m in urdf["meshes"]]
+            urdf["center"] = p.get("center") or [0.0, 0.0, 0.0]
+            urdf["rpy"] = [math.radians(float(v)) for v in (p.get("theta") or [0.0, 0.0, 0.0])]
+            urdf["swept_bbox"] = p.get("swept_bbox")
+            urdf["result_name"] = p.get("node_id") or ("placement_%d" % i)
+            urdfs.append(urdf)
+        except Exception as e:  # noqa: BLE001
+            errors.append("placement[%d]: %s" % (i, e))
 
     if urdfs:
         scene["urdfs"] = urdfs
@@ -573,8 +601,8 @@ INDEX_HTML = """<!doctype html>
       var parts = ['layout OBB axes: <span class="x">X</span> &nbsp;<span class="y">Y</span>&nbsp;(up)&nbsp; <span class="z">Z</span>'];
       (data.urdfs || []).forEach(function (u) {
         parts.push('URDF: ' + u.name + ' &middot; ' + Object.keys(u.links).length + ' links / ' + (u.joints || []).length + ' joints &middot; y-up');
-        if (u.real_bbox) {
-          parts.push('real_bbox: ' + u.real_bbox.dims.map(function (d) { return d.toFixed(3); }).join(' x ') + ' m');
+        if (u.swept_bbox) {
+          parts.push('swept_bbox: ' + u.swept_bbox.dims.map(function (d) { return d.toFixed(3); }).join(' x ') + ' m');
         }
       });
       legend.innerHTML = parts.join(' &nbsp;&middot;&nbsp; ');
@@ -680,6 +708,7 @@ class Handler(BaseHTTPRequestHandler):
     config_path = None     # Path: JSON config re-read on every /scene.json (hot reload)
     cli_layout = None      # --layout CLI override (fixed)
     cli_arti = None        # --arti CLI override (fixed)
+    cli_placements = None  # --placements CLI override (fixed)
     mesh_map = {}          # key -> absolute mesh filename (set by last /scene.json)
     _lock = threading.Lock()
 
@@ -696,11 +725,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             self._send(200, "text/html; charset=utf-8", INDEX_HTML.encode("utf-8"))
         elif path == "/scene.json":
-            layout_path, arti_paths, config_error = _resolve_targets(
-                Handler.config_path, Handler.cli_layout, Handler.cli_arti
+            layout_path, arti_paths, placements_path, config_error = _resolve_targets(
+                Handler.config_path, Handler.cli_layout, Handler.cli_arti, Handler.cli_placements
             )
-            print("[viewer] layout=%s arti=%s" % (layout_path, arti_paths), file=sys.stderr, flush=True)
-            scene, mesh_map = build_scene(layout_path, arti_paths)
+            placements = None
+            if placements_path and Path(placements_path).is_file():
+                try:
+                    placements = json.loads(Path(placements_path).read_text(encoding="utf-8"))
+                    if not isinstance(placements, list):
+                        placements = None
+                except (OSError, ValueError):
+                    placements = None
+            print("[viewer] layout=%s arti=%s placements=%s" % (layout_path, arti_paths, placements_path), file=sys.stderr, flush=True)
+            scene, mesh_map = build_scene(layout_path, arti_paths, placements)
             if config_error:
                 prefix = (scene.get("error") + "; ") if scene.get("error") else ""
                 scene["error"] = prefix + "config: " + config_error
@@ -736,17 +773,16 @@ def _most_recent(subdir):
     return files[0] if files else None
 
 
-def _resolve_targets(config_path, cli_layout, cli_arti):
-    """Re-read the config (if any) and resolve the current layout/arti targets.
+def _resolve_targets(config_path, cli_layout, cli_arti, cli_placements=None):
+    """Re-read the config (if any) and resolve the current layout/arti/placements targets.
 
-    Precedence: CLI --layout/--arti override the config file; if neither is set
-    anywhere, the most recently written output from each agent is auto-discovered.
-    Returns (layout_path, arti_paths, config_error): ``layout_path`` is a resolved
-    Path or None, ``arti_paths`` is a list of resolved Paths (possibly empty), and
-    ``config_error`` is a config read/parse error string (or None).
+    Precedence: CLI --layout/--arti/--placements override the config file; if neither
+    layout nor arti is set anywhere, the most recently written output from each agent
+    is auto-discovered. Returns (layout_path, arti_paths, placements_path, config_error).
     """
     layout = cli_layout
     arti = cli_arti
+    placements = cli_placements
     bases = [BASE_ROOT, OUTPUT_DIR]
     config_error = None
 
@@ -761,6 +797,8 @@ def _resolve_targets(config_path, cli_layout, cli_arti):
             layout = cfg.get("layout")
         if arti is None:
             arti = cfg.get("arti")
+        if placements is None:
+            placements = cfg.get("placements")
 
     if layout is None and arti is None:
         layout = _most_recent("layoutagent")
@@ -775,7 +813,8 @@ def _resolve_targets(config_path, cli_layout, cli_arti):
 
     layout_path = _resolve(layout, bases) if layout else None
     arti_paths = [_resolve(a, bases) for a in arti_list]
-    return layout_path, arti_paths, config_error
+    placements_path = _resolve(placements, bases) if placements else None
+    return layout_path, arti_paths, placements_path, config_error
 
 
 def main():
@@ -783,6 +822,7 @@ def main():
     ap.add_argument("--config", help='JSON file: {"layout": <path>, "arti": <path or [paths]>} (paths relative to BaseAgent/output/ or absolute)')
     ap.add_argument("--layout", help="Path to a LayoutAgent scene-graph JSON (overrides --config layout)")
     ap.add_argument("--arti", help="Path to an ArtiAgent result JSON (overrides --config arti)")
+    ap.add_argument("--placements", help="Path to a _placements.json (final per-node instantiation; overrides --config placements)")
     ap.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     ap.add_argument("--port", type=int, default=8000, help="Port (default: 8000)")
     args = ap.parse_args()
@@ -791,9 +831,11 @@ def main():
     Handler.config_path = config_path
     Handler.cli_layout = args.layout
     Handler.cli_arti = args.arti
+    Handler.cli_placements = args.placements
 
     # resolve once for a startup summary (the same resolution re-runs on every page load)
-    layout_path, arti_paths, config_error = _resolve_targets(config_path, args.layout, args.arti)
+    layout_path, arti_paths, placements_path, config_error = _resolve_targets(
+        config_path, args.layout, args.arti, args.placements)
     if config_error:
         print("config:", config_error, file=sys.stderr)
     if layout_path is not None and layout_path.is_file():
@@ -801,6 +843,8 @@ def main():
     for ap_ in arti_paths:
         if ap_ is not None and ap_.is_file():
             print("arti:  ", ap_, flush=True)
+    if placements_path is not None and Path(placements_path).is_file():
+        print("placements:", placements_path, flush=True)
     if layout_path is None and not arti_paths:
         print("(no layout/arti selected; will auto-discover or render nothing)", file=sys.stderr)
 

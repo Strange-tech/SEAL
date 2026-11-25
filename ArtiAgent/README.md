@@ -52,7 +52,7 @@ ArtiAgent 是 SEAL 流水线里的"单物体铰接资产生成器"。给定一�
 | `model.py` | **工作文件**，LLM 反复编辑的就是它。约定定义 `build_object_model()` 并赋给模块级 `object_model`。 |
 | `scaffold.py` | `model.py` 的初始模板（`ensure_model_scaffold` 用它重置）。 |
 | `basic_tools.py` | 基础工具：`read_file` / `write_file` / `edit_file` / `list_files` / `bash`，以及共享常量与辅助函数（`WORK_DIR`、`TRASH_DIR`、`MODEL_FILENAME`、`tail`、`backup_if_exists`、`restore` 等）。 |
-| `tools/` | 领域工具，每个工具一个文件：`compile.py`（`CompileModelTool`，含 `--box` 的 `<box_delta>` 差值 + `<orientation_check>` 朝向检测）、`probe.py`（`ProbeModelTool`）、`real_bbox.py`（`RealBboxTool`）、`find_examples.py`（`FindExamplesTool`）。 |
+| `tools/` | 领域工具，每个工具一个文件：`compile.py`（`CompileModelTool`，含 `--box` 的 `<box_delta>` 差值 + `<orientation_check>` 朝向检测）、`probe.py`（`ProbeModelTool`）、`swept_bbox.py`（`SweptBboxTool`）、`find_examples.py`（`FindExamplesTool`）。 |
 | `provider.py` | LLM provider 配置（deepseek / qwen 的默认模型、base_url、api_key_env）。 |
 | `materialize_cli.py` | 把某个 record 的 model.py 重新编译物化成 `model.urdf` + meshes，可导出到指定目录。 |
 | `viewer.py` | 本地 asset viewer（从 BaseAgent 的 room_viewer 复制改造）：默认加载 `assets/10_assets_only_text/*.json` 逐个渲染；用 `--config` 可同时渲染布局 box（layout）+ 多个 asset（用于 `--box` 结果检查），带网格 + 坐标轴。 |
@@ -65,7 +65,7 @@ ArtiAgent 是 SEAL 流水线里的"单物体铰接资产生成器"。给定一�
 | 路径 | 说明 |
 |---|---|
 | `compiler.py` | 编译核心：`compile_urdf_report_maybe_timeout`（执行 model.py → 建 object_model → 导出 URDF XML，带超时保护）。 |
-| `bbox.py` | `compute_model_real_bbox`（joint-range swept 包围盒）与 `compute_zero_pose_bbox`（零姿态静态包围盒，供 `--box` 朝向检测用）。 |
+| `bbox.py` | `compute_model_swept_bbox`（joint-range swept 包围盒）与 `compute_zero_pose_bbox`（零姿态静态包围盒，供 `--box` 朝向检测用）。 |
 | `persistence.py` | record 的写入/物化（`write_success_record`、`materialize_record`）。 |
 | `structurer.py` | 把 terse prompt 展开成 design brief。 |
 | `feedback.py` | 编译结果格式化（`render_compile_signals`）。 |
@@ -78,11 +78,11 @@ model.py 作者使用的公开 SDK。
 | 路径 | 说明 |
 |---|---|
 | `sdk/v0/` | 公开 API 入口（`ArticulatedObject`、`mesh_from_cadquery`、`fit_to_box` 等 re-export）。 |
-| `sdk/_core/v0/` | 核心实现（articulated object、URDF export、fit_to_box、real_bounding_box、mesh 等）。 |
+| `sdk/_core/v0/` | 核心实现（articulated object、URDF export、fit_to_box、swept_bounding_box、mesh 等）。 |
 | `sdk/_extensions/` | 扩展，主要是 CadQuery。 |
 | `sdk/_extensions/cadquery/v0/cadquery.py` | **CadQuery 扩展，OBJ 保存功能就在这里**：`mesh_from_cadquery` → `export_cadquery_mesh` → `_tessellate_cadquery_shape`（三角化 + **z-up→y-up 转换**）→ `_write_obj`（把顶点/面写成 `.obj`）。 |
 | `sdk/_core/v0/fit_to_box.py` | `fit_to_box`（现为 **no-op**，旧的等比缩放逻辑已废弃，改为编译期 box 差值反馈）。 |
-| `sdk/_core/v0/real_bounding_box.py` | `joint_range_bounding_box`（关节全运动范围的 swept AABB）。 |
+| `sdk/_core/v0/swept_bounding_box.py` | `joint_range_bounding_box`（关节全运动范围的 swept AABB）。 |
 | `sdk/_docs/` / `sdk/_examples/` | SDK 文档 / 示例（LLM 会 read_file 参考）。 |
 
 ### `storage/`

@@ -6,7 +6,7 @@ Renders two things in one browser scene:
 * **layout** — a LayoutAgent scene-graph JSON (``nodes``/``edges``) from
   ``BaseAgent/output/layoutagent/``. Each node is drawn as a semi-transparent OBB
   box; hovering it shows its local XYZ axes (X red / Y green / Z blue) and id.
-* **arti** — an ArtiAgent result JSON (``asset_dir`` + ``real_bbox``) from
+* **arti** — an ArtiAgent result JSON (``asset_dir`` + ``swept_bbox``) from
   ``BaseAgent/output/artiagent/``. The viewer resolves the record's materialized
   ``model.urdf`` + ``assets/meshes/*.obj`` and renders the articulated object,
   with a toggle to animate each joint across its ``<limit lower/upper>`` range.
@@ -578,8 +578,9 @@ INDEX_HTML = """<!doctype html>
   var raycaster = new THREE.Raycaster();
   var pointer = new THREE.Vector2();
   window.addEventListener('mousemove', function (ev) {
-    pointer.x = (ev.clientX / window.innerWidth) * 2 - 1;
-    pointer.y = -(ev.clientY / window.innerHeight) * 2 + 1;
+    var rect = renderer.domElement.getBoundingClientRect();
+    pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
     var targets = layoutMeshes.concat(urdfMeshes);
     var hits = raycaster.intersectObjects(targets, false);
@@ -680,7 +681,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/scene.json":
             base_files = sorted(OUTPUT_DIR.glob("base_layout.json"), key=lambda p: p.stat().st_mtime)
             edit_files = sorted(OUTPUT_DIR.glob("edit_*.json"), key=lambda p: p.stat().st_mtime)
-            files = base_files + edit_files
+            files = base_files + edit_files + sorted(OUTPUT_DIR.glob("10_assets_layout.json"), key=lambda p: p.stat().st_mtime)
             scene = build_layouts(files)
             if not files and not scene.get("error"):
                 scene["error"] = "no layout JSON found in " + str(OUTPUT_DIR)

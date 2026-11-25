@@ -11,11 +11,11 @@
 
 ### 关键决策（先定死，不返工）
 1. **子进程编排（非 in-process import）**：两个 subagent 各自独立持有 system prompt/sdk/session/全部文件，天然对应子进程。BaseAgent 用 `subprocess` 调两个项目的 `main.py`，CLI 参数传任务、JSON 文件收结果。不复用 BaseAgent 现有的 `subagent.py`（那是单项目内工具 fan-out，不是跨项目调用）。
-2. **机器可读交换（JSON）**：新增两个 emit —— LayoutAgent `--emit-scene-graph <path>`（dump `build_scene_graph()` 结果）；ArtiAgent `--emit-result <path>`（dump 产物目录 + 真实包围盒）。
-3. **坐标系契约**：统一 y-up、物体正面=+z（朝向相机）、上方=+y，与 LayoutAgent 房间系一致。ArtiAgent 的 box 约束与真实包围盒都按此约定。
+2. **机器可读交换（JSON）**：新增两个 emit —— LayoutAgent `--emit-scene-graph <path>`（dump `build_scene_graph()` 结果）；ArtiAgent `--emit-result <path>`（dump 产物目录 + 扫掠包围盒）。
+3. **坐标系契约**：统一 y-up、物体正面=+z（朝向相机）、上方=+y，与 LayoutAgent 房间系一致。ArtiAgent 的 box 约束与扫掠包围盒都按此约定。
 
 ### SDK 核查结论（已核实）
-- **真实包围盒**：SDK 无现成函数，但原语齐全 —— FK/姿态 `pose()`/`_world_tfs()`（`sdk/_core/v0/_testing/core.py:560,608`）、按关节限位采样（`fail_if_parts_overlap_in_sampled_poses`）、AABB 原语 `part_local_aabbs` / `_transform_aabb`（`_testing/common.py:371`）/ `_aabb_union`（`collision_helpers.py:59`）、关节限位 `articulation.motion_limits`（lower/upper）。→ 缺一个「遍历关节 range 并集所有 world AABB」的组装函数（见 Phase 4）。
+- **扫掠包围盒**：SDK 无现成函数，但原语齐全 —— FK/姿态 `pose()`/`_world_tfs()`（`sdk/_core/v0/_testing/core.py:560,608`）、按关节限位采样（`fail_if_parts_overlap_in_sampled_poses`）、AABB 原语 `part_local_aabbs` / `_transform_aabb`（`_testing/common.py:371`）/ `_aabb_union`（`collision_helpers.py:59`）、关节限位 `articulation.motion_limits`（lower/upper）。→ 缺一个「遍历关节 range 并集所有 world AABB」的组装函数（见 Phase 4）。
 - **差集/布尔**：SDK 已有布尔能力 —— `manifold3d`/`cadquery`/`trimesh`（`requirements.txt`），`sdk/_core/v0/_mesh/booleans.py` 已有 `_boolean_union_many` / `_manifold_from_geometry` / `_geometry_from_manifold`，`_mesh/controls.py` 有 `_cut_with_pattern`/`BezelCutout`。→ 差集在 ArtiAgent 做，基于 manifold3d 补一个 difference helper 即可（见 Phase 7）。
 
 ---
@@ -60,18 +60,18 @@
 
 ---
 
-## Phase 4 — ArtiAgent「真实包围盒」工具（补 SDK 函数）
+## Phase 4 — ArtiAgent「扫掠包围盒」工具（补 SDK 函数）
 
 **目标**：ArtiAgent 返回铰链物体**所有关节全活动范围**覆盖的包围盒（非当前姿态）。
 
 **改动**（`ArtiAgent/`）
-- SDK 加 `sdk/_core/v0/real_bounding_box.py`（或并入现有模块）：
+- SDK 加 `sdk/_core/v0/swept_bounding_box.py`（或并入现有模块）：
   `joint_range_bounding_box(model, samples=None) -> (center, dims)`。
   实现：枚举关节限位采样（复用 `fail_if_parts_overlap_in_sampled_poses` 的采样逻辑）→ 每姿态取各 part 的 `part_local_aabbs` → `_transform_aabb` 到 world（用 `_world_tfs()`）→ `_aabb_union` 求并集 → 返回 root 帧下的 (center, dims)。这是一个组装函数，不涉及新运动学。
-- 新增工具 `real_bbox`（放 `tool_layer.py` 或新 `tools/bbox.py`），调上述 SDK 函数。
-- `--emit-result` 写 `{asset_dir, real_bbox}`。
+- 新增工具 `swept_bbox`（放 `tool_layer.py` 或新 `tools/bbox.py`），调上述 SDK 函数。
+- `--emit-result` 写 `{asset_dir, swept_bbox}`。
 
-**验收**：对开盖箱子，`real_bbox` 范围 ≥ 盖子全开 + 闭合两姿态并集。
+**验收**：对开盖箱子，`swept_bbox` 范围 ≥ 盖子全开 + 闭合两姿态并集。
 
 ---
 
@@ -84,7 +84,7 @@
   1. 调 LayoutAgent → 取 `nodes/edges`。
   2. 筛出需精细化的 `object` 节点（每节点一个 box）。
   3. 对每 box 并行调 ArtiAgent（`ThreadPoolExecutor`；`--image`=该物体 SAM3 mask、`--task`=VLM 语义描述、`--box`=该 box）。
-  4. 汇总 `{asset_dir, real_bbox}`。
+  4. 汇总 `{asset_dir, swept_bbox}`。
 - 主 agent 用工具 `reconstruct_scene` 触发此流程。
 
 **验收**：一张图 → room.py 布局 + 每物体独立 ArtiAgent 产物；并行 N 时总耗时 ≈ 单物体耗时而非 N×。
@@ -93,12 +93,12 @@
 
 ## Phase 6 — 双向迭代优化循环
 
-**目标**：ArtiAgent 真实包围盒回传 LayoutAgent，布局自适应铰链形变，消除碰撞与悬空。
+**目标**：ArtiAgent 扫掠包围盒回传 LayoutAgent，布局自适应铰链形变，消除碰撞与悬空。
 
 **改动**（`BaseAgent/` + `LayoutAgent/`）
-- LayoutAgent 加 `--apply-bboxes <json>`：读入各物体真实包围盒，覆盖 room.py 对应节点的 `D`（必要时 `C`），再 `compile` 重校验。
+- LayoutAgent 加 `--apply-bboxes <json>`：读入各物体扫掠包围盒，覆盖 room.py 对应节点的 `D`（必要时 `C`），再 `compile` 重校验。
 - `orchestrate_reconstruct` 改为循环：
-  `layout → per-box ArtiAgent → real_bbox → apply-bboxes → compile → 仍有碰撞/悬空则再迭代`，直到 stable 或达上限。
+  `layout → per-box ArtiAgent → swept_bbox → apply-bboxes → compile → 仍有碰撞/悬空则再迭代`，直到 stable 或达上限。
 
 **验收**：开盖物体从「闭盖 box」被修正为「全开真实 box」，邻近物体间距/支撑不再冲突。
 
@@ -113,7 +113,7 @@
 **改动**（`ArtiAgent/`）
 - ArtiAgent 加 `--subtract '<box1>;<box2>...'`（要挖掉的 guest 体积盒，房间系），由 BaseAgent 从 `embedded_in` 边解析后传入。
 - 几何层：用现有 manifold3d 布尔做差集。`sdk/_core/v0/_mesh/booleans.py` 若只有 union，补 `_boolean_subtract(...)`（manifold3d `Manifold - Manifold`）。
-- host 物体的 root OBB **不变**（仍是墙 box），只有 mesh 带孔；`real_bbox` 也仍按 OBB 报，不因挖洞而变。
+- host 物体的 root OBB **不变**（仍是墙 box），只有 mesh 带孔；`swept_bbox` 也仍按 OBB 报，不因挖洞而变。
 
 **验收**：窗户嵌入墙后，墙 mesh 有对应开孔，窗与墙不重叠；墙的 `D`/`C` 不变。
 
@@ -137,7 +137,7 @@
 Phase 1 (REPL)      ──┐
 Phase 2 (编排层)     ──┼── 可先做，互不阻塞
 Phase 3 (--box)      ──┤
-Phase 4 (real bbox)  ──┤
+Phase 4 (swept bbox)  ──┤
                        ↓
 Phase 5 (主流程，依赖 2+3)
 Phase 6 (迭代循环，依赖 4+5)

@@ -1,5 +1,5 @@
 """Real (joint-range) bounding box helpers shared by the `--emit-result` path and
-the `real_bbox` tool."""
+the `swept_bbox` tool."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from sdk._core.v0.assets import (
     activate_asset_session,
     asset_session_for_script,
 )
-from sdk._core.v0.real_bounding_box import joint_range_bounding_box
+from sdk._core.v0.swept_bounding_box import joint_range_bounding_box
 
 
-def compute_model_real_bbox(
+def compute_model_swept_bbox(
     model_path,
     *,
     asset_root=None,
@@ -48,14 +48,14 @@ def compute_model_real_bbox(
     return center, dims
 
 
-def compute_zero_pose_bbox(
+def compute_rest_bbox(
     model_path,
     *,
     asset_root=None,
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
     """Return the object's ``(center, dims)`` at the zero (rest) pose.
 
-    Unlike :func:`compute_model_real_bbox` (which sweeps the full joint range,
+    Unlike :func:`compute_model_swept_bbox` (which sweeps the full joint range,
     so a drawer that slides open inflates the swept depth), this measures only
     the resting footprint. The ``--box`` orientation check compares against this
     static box so articulated travel cannot masquerade as a wrong orientation.

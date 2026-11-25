@@ -30,6 +30,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from contract import (
+    validate_scene_graph,
+    validate_placement_request,
+    validate_asset_result,
+    placement_request as build_placement_request,
+)
 from typing import Any
 
 
@@ -231,7 +238,12 @@ def run_layout_agent(
         args += ["--model", model]
 
     proc = _run(LAYOUT_AGENT_DIR, LAYOUT_PYTHON, args, timeout)
-    out = _delegation_result("LayoutAgent", proc, out_path, _read_json(str(out_path)))
+    payload = _read_json(str(out_path))
+    out = _delegation_result("LayoutAgent", proc, out_path, payload)
+    if payload is not None and out.get("ok"):
+        errs = validate_scene_graph(payload)
+        if errs:
+            out["contract_errors"] = errs
     if state_save_path:
         perception = _read_json(str(Path(state_save_path) / "manifest.json"))
         if perception is not None:
@@ -251,7 +263,7 @@ def run_arti_agent(
 ) -> dict:
     """Delegate a single object's geometry to ArtiAgent and return its emitted result.
 
-    The result (asset_dir + real_bbox) is always written to BaseAgent/output/artiagent/ and
+    The result (asset_dir + swept_bbox) is always written to BaseAgent/output/artiagent/ and
     returned in `result`; `emit_result` overrides that location if given. `box` (optional)
     is a {center, dims, rpy} dict that constrains the object's scale and position.
     """
@@ -260,6 +272,22 @@ def run_arti_agent(
         print(f"[ArtiAgent] warning: task is {nwords} words — a terse (<=8 word) task "
               f"lets the structurer expand it and works better", file=sys.stderr)
     out_path = Path(emit_result) if emit_result else _default_output("artiagent", task)
+
+    # Versioned placement request: the Layout->Arti handoff, persisted for traceability.
+    if box:
+        req = build_placement_request(
+            object_id=out_path.stem,
+            label=task,
+            box=box,
+            image=image_path,
+        )
+        errs = validate_placement_request(req)
+        if errs:
+            print(f"[contract] invalid placement_request: {'; '.join(errs)}", file=sys.stderr)
+        else:
+            req_path = out_path.with_suffix(".placement.json")
+            req_path.write_text(json.dumps(req, ensure_ascii=False, indent=2), encoding="utf-8")
+
     args = ["--task", task]
     if image_path:
         args += ["--image", str(image_path)]
@@ -274,9 +302,47 @@ def run_arti_agent(
     workdir = Path(tempfile.mkdtemp(prefix="arti_work_"))
     try:
         proc = _run(ARTI_AGENT_DIR, ARTI_PYTHON, args, timeout, cwd=workdir)
-        return _delegation_result("ArtiAgent", proc, out_path, _read_json(str(out_path)))
+        payload = _read_json(str(out_path))
+        out = _delegation_result("ArtiAgent", proc, out_path, payload)
+        if payload is not None and out.get("ok"):
+            errs = validate_asset_result(payload)
+            if errs:
+                out["contract_errors"] = errs
+        return out
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def run_layout_apply_bboxes(
+    scene_graph: dict,
+    bboxes: list,
+    *,
+    task: str = "resolve collisions with the measured object sizes",
+    emit_scene_graph: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> dict:
+    """Re-run LayoutAgent with measured rest/swept bboxes baked in.
+
+    Writes a ``{schema_version, scene, bboxes}`` payload and delegates to LayoutAgent's
+    ``--apply-bboxes`` mode: it scaffolds ``room.py`` from ``scene``, overrides each node's
+    D with its rest bbox and attaches the swept bbox, then runs its normal
+    write-compile-fix loop to resolve any new collision/floating. Returns the re-emitted
+    scene graph.
+    """
+    out_path = Path(emit_scene_graph) if emit_scene_graph else _default_output("layoutagent", task)
+    payload = {"schema_version": 1, "scene": scene_graph, "bboxes": bboxes}
+    seed_path = out_path.with_suffix(".bboxes.json")
+    seed_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    args = ["--task", task, "--apply-bboxes", str(seed_path), "--emit-scene-graph", str(out_path)]
+    if provider:
+        args += ["--provider", provider]
+    if model:
+        args += ["--model", model]
+    proc = _run(LAYOUT_AGENT_DIR, LAYOUT_PYTHON, args, timeout)
+    return _delegation_result("LayoutAgent", proc, out_path, _read_json(str(out_path)))
 
 
 def _norm_key(s: str) -> str:
@@ -507,7 +573,7 @@ def orchestrate_reconstruct(
        pixels remain) and call ArtiAgent with the mask image + the object's text label
        (the mask name), constrained by the merged box of its part-nodes. Object nodes
        with no matching mask fall back to the full image + their node label.
-    4. Aggregate ``{asset_dir, real_bbox}`` per object.
+    4. Aggregate ``{asset_dir, swept_bbox}`` per object.
 
     Returns ``{ok, layout, perception, objects, ...}`` for the orchestrating LLM.
     """
@@ -527,8 +593,8 @@ def orchestrate_reconstruct(
     if not layout.get("ok"):
         return {"ok": False, "stage": "layout", "layout": layout}
 
-    result = layout.get("result") or {}
-    nodes = result.get("nodes") or []
+    scene_graph = layout.get("result") or {}
+    nodes = scene_graph.get("nodes") or []
     object_nodes = [n for n in nodes if (n.get("type") or "").lower() == "object"]
 
     # 2. perception manifest: name -> mask relpath (e.g. "sofa" -> "masks/sofa.npy")
@@ -586,6 +652,7 @@ def orchestrate_reconstruct(
 
     # 4. per-class generation (once) + per-object instantiation (placement).
     objects: dict = {}
+    bboxes: list = []
     if class_groups:
         max_workers = max_workers or len(class_groups)
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -612,9 +679,13 @@ def orchestrate_reconstruct(
                     entry = {"agent": "ArtiAgent", "ok": False, "error": str(e)}
                 result = entry.get("result") or {}
                 asset_dir = result.get("asset_dir")
-                dims = result.get("dims")
+                rest = result.get("rest_bbox")
+                swept = result.get("swept_bbox")
+                dims = (rest or {}).get("dims")
                 for i, obj in enumerate(objs):
                     node_ids = [n.get("id") for n in obj["nodes"]]
+                    if rest and swept:
+                        bboxes.append({"node_ids": node_ids, "rest": rest, "swept": swept})
                     if i == 0:
                         entry.setdefault("task", obj["text"])
                         entry.setdefault("node_ids", node_ids)
@@ -640,9 +711,70 @@ def orchestrate_reconstruct(
                         "class": klass,
                     }
 
+    refined = None
+    if bboxes and scene_graph:
+        refined = run_layout_apply_bboxes(
+            scene_graph,
+            bboxes,
+            emit_scene_graph=str(layout_out.with_name(layout_out.stem + "_refined.json")),
+            provider=provider,
+            model=model,
+            timeout=timeout,
+        )
+
+    # Gap 2: assemble the final instantiation — each node -> asset_dir + refined pose
+    # (the "move the 3D asset to its pose" step). The refined scene graph is the single
+    # source of truth for C/theta/D/swept_bbox; `objects` carries node_id -> asset_dir.
+    #
+    # The layout node's C is the bbox CENTER, but the URDF is authored with its origin
+    # offset from that center (rest_bbox.center — e.g. a coffee table's origin is at the
+    # legs while its bbox center sits at tabletop height). So the URDF origin is placed at
+    #   C - R(yaw) @ rest.center
+    # so the asset's bbox lands exactly on the node's OBB instead of floating above it.
+    node_rest = {}
+    for b in bboxes:
+        rc = (b.get("rest") or {}).get("center") or [0.0, 0.0, 0.0]
+        for nid in b.get("node_ids") or []:
+            node_rest[nid] = rc
+
+    placements = []
+    if refined and refined.get("ok"):
+        refined_nodes = (refined.get("result") or {}).get("nodes") or []
+        node_asset = {}
+        for obj in objects.values():
+            ad = (obj.get("result") or {}).get("asset_dir")
+            if not ad:
+                continue
+            for nid in obj.get("node_ids") or []:
+                node_asset[nid] = ad
+        for node in refined_nodes:
+            nid = node.get("id")
+            if nid not in node_asset:
+                continue
+            c = node.get("C") or [0.0, 0.0, 0.0]
+            theta = node.get("theta") or [0.0, 0.0, 0.0]
+            rc = node_rest.get(nid) or [0.0, 0.0, 0.0]
+            # rotate the rest-center offset by yaw (theta[1], degrees) about +Y
+            yaw = math.radians(float(theta[1]) if len(theta) > 1 else 0.0)
+            cy, sy = math.cos(yaw), math.sin(yaw)
+            off = (rc[0] * cy + rc[2] * sy, rc[1], -rc[0] * sy + rc[2] * cy)
+            origin = [c[0] - off[0], c[1] - off[1], c[2] - off[2]]
+            placements.append({
+                "node_id": nid,
+                "asset_dir": node_asset[nid],
+                "center": [round(float(v), 6) for v in origin],
+                "theta": theta,
+                "dims": node.get("D"),
+                "swept_bbox": node.get("swept_bbox"),
+            })
+        placements_path = layout_out.with_name(layout_out.stem + "_placements.json")
+        placements_path.write_text(json.dumps(placements, ensure_ascii=False, indent=2), encoding="utf-8")
+
     return {
         "ok": True,
-        "layout": {"output": layout.get("output"), "result": result},
+        "layout": {"output": layout.get("output"), "result": scene_graph},
         "perception": manifest,
         "objects": objects,
+        "refined": refined,
+        "placements": placements,
     }
